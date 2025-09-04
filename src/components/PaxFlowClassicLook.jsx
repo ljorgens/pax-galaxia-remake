@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Delaunay } from 'd3-delaunay';
+import DEFAULT_MUSIC_URL from '../assets/audio/leonell-cassio-the-sapphire-city-10450.mp3';
 
 const WIDTH = 980;
 const HEIGHT = 600;
@@ -365,6 +366,17 @@ export default function PaxFlowClassicLook() {
     const [alwaysShowNeighbors, setAlwaysShowNeighbors] = useState(true);
     const [paused, setPaused] = useState(false);
     const players = useMemo(() => makePlayers(aiCount), [aiCount]);
+    // --- Music ---
+    const [musicOn, setMusicOn] = useState(() => {
+        const saved = localStorage.getItem('pax_music_on');
+        return saved ? saved === 'true' : false;
+    });
+    const [musicVolume, setMusicVolume] = useState(() => {
+        const saved = localStorage.getItem('pax_music_vol');
+        return saved ? Math.min(1, Math.max(0, parseFloat(saved))) : 0.6;
+    });
+    const audioRef = useRef(null);
+
 
     const STAR = useMemo(()=>({
         Y:{name:"Yellow – Production×2",color:"#ffd34a",prod:2,label:"Y"},
@@ -875,6 +887,53 @@ export default function PaxFlowClassicLook() {
         return () => clearInterval(timer);
     }, [players, worldSpeed, paused, scene, STAR]);
 
+    // Create the Audio element once
+    useEffect(() => {
+        if (!audioRef.current) {
+            const a = new Audio(DEFAULT_MUSIC_URL);
+            a.loop = true;
+            a.volume = musicVolume;
+            audioRef.current = a;
+        }
+        return () => {
+            // If this component ever unmounts entirely
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current = null;
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // React to musicOn / musicVolume changes
+    useEffect(() => {
+        localStorage.setItem('pax_music_on', String(musicOn));
+        localStorage.setItem('pax_music_vol', String(musicVolume));
+        const a = audioRef.current;
+        if (!a) return;
+
+        a.volume = musicVolume;
+
+        if (musicOn) {
+            // Browser autoplay policies require a user gesture.
+            // Toggling the button is a gesture—so try playing, swallow any promise rejection.
+            a.play().catch(() => {});
+        } else {
+            a.pause();
+        }
+    }, [musicOn, musicVolume]);
+
+    // Hotkey: 'M' to toggle music
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === 'm' || e.key === 'M') {
+                setMusicOn((v) => !v);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
+
     function queuePacket(fromId, toId, owner, amount, a, b, STARMAP) {
         const dist = distance(a, b);
         let edgeSpeed = 0.55 / Math.max(0.2, dist/420);
@@ -974,6 +1033,26 @@ export default function PaxFlowClassicLook() {
                         </ul>
                     </div>
                 </div>
+                <div className="mt-4 pt-4 border-t border-slate-700/50">
+                    <label className="block text-sm mb-1">Music</label>
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setMusicOn(v => !v)}
+                            className={`px-3 py-1 rounded-2xl border ${musicOn ? "bg-slate-800" : ""}`}
+                            title="Toggle music (M)"
+                        >
+                            {musicOn ? 'On' : 'Off'}
+                        </button>
+                        <input
+                            type="range"
+                            min="0" max="1" step="0.01"
+                            value={musicVolume}
+                            onChange={e => setMusicVolume(parseFloat(e.target.value))}
+                        />
+                    </div>
+                    <div className="text-xs opacity-70 mt-1">Press <b>M</b> to toggle</div>
+                </div>
                 <div className="mt-6 flex gap-3">
                     <button onClick={startGameFromMenu} className="px-4 py-2 rounded-2xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Generate Galaxy</button>
                     <button onClick={()=>setMenuSeed('PAX-'+Math.floor(Math.random()*9999))} className="px-4 py-2 rounded-2xl border border-slate-700">Randomize Seed</button>
@@ -981,8 +1060,6 @@ export default function PaxFlowClassicLook() {
             </div>
         );
     }
-
-    const MAX_EXTENT = RADIUS * 1.0;
 
     return (
         <div className="w-full flex flex-col items-center gap-3 select-none">
@@ -996,6 +1073,23 @@ export default function PaxFlowClassicLook() {
                     {[0.5,1,1.5,2].map(s => (
                         <button key={s} onClick={()=>setWorldSpeed(s)} className={`px-2 py-0.5 rounded-2xl border text-sm ${worldSpeed===s?"bg-black/10 font-semibold":""}`}>{s}x</button>
                     ))}
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                    <span className="opacity-70">Music</span>
+                    <button
+                        onClick={() => setMusicOn(v => !v)}
+                        className={`px-2 py-0.5 rounded-2xl border text-sm ${musicOn ? "bg-black/10 font-semibold" : ""}`}
+                        title="Toggle music (M)"
+                    >
+                        {musicOn ? 'On' : 'Off'}
+                    </button>
+                    <input
+                        type="range"
+                        min="0" max="1" step="0.01"
+                        value={musicVolume}
+                        onChange={e => setMusicVolume(parseFloat(e.target.value))}
+                        style={{ width: 90 }}
+                    />
                 </div>
             </div>
 
@@ -1039,10 +1133,8 @@ export default function PaxFlowClassicLook() {
                                 <g key={ci} fill={ownerColor(pl.id)}>
                                     {comp.map(star => {
                                         const poly = cellPolys.get(star.id);
-                                        if (!poly) return null;
-                                        const clipped = clipPolyWithCircle(poly, star.x, star.y, MAX_EXTENT, 40);
-                                        if (!clipped.length) return null;
-                                        const d = `M${clipped.map(p=>`${p.x},${p.y}`).join('L')}Z`;
+                                        if (!poly || !poly.length) return null;
+                                        const d = `M${poly.map(p=>`${p.x},${p.y}`).join('L')}Z`;
                                         return <path key={star.id} d={d} />;
                                     })}
                                 </g>
