@@ -8,6 +8,20 @@ const HEIGHT = 600;
 const RADIUS = 10;
 const OWNER_COLORS = ["#63a6ff","#ff6b6b","#35d072","#ffd166","#b892ff","#ff8c42","#22d3ee","#f472b6","#a3e635","#f59e0b","#8b5cf6","#14b8a6","#ef4444","#10b981","#eab308","#3b82f6"];
 
+// ==== AI tuning knobs (new) ====
+const AI_SEND_BASE = 0.12;             // steady trickle rate
+const AI_BURST = 0.45;                 // burst when favorable
+const AI_BURST_COOLDOWN_TICKS = 6;     // ~13s at PLAN_INTERVAL=2200ms
+const AI_OPENING_WINDOW_SEC = 50;      // bias early expansion
+const PLAN_INTERVAL = 2200;            // (moved up for clarity)
+const SWITCH_COOLDOWN = 2;             // ticks before retarget
+const DANGER_GARRISON_BONUS = 15;      // legacy constant (still used for urgency)
+const ODDS_GO_AGGR = 0.45;
+const ODDS_GO_SAFE = 0.60;
+const ODDS_CANCEL_AGGR = 0.50;
+const ODDS_CANCEL_SAFE = 0.72;
+
+// ==== RNG & math helpers ====
 function xmur3(str){ let h=1779033703^str.length; for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=h<<13|h>>>19; } return function(){ h=Math.imul(h^h>>>16,2246822507); h=Math.imul(h^h>>>13,3266489909); h^=h>>>16; return h>>>0; } }
 function mulberry32(a){ return function(){ let t=a+=0x6D2B79F5; t=Math.imul(t^t>>>15,t|1); t^=t+Math.imul(t^t>>>7,t|61); return ((t^t>>>14)>>>0)/4294967296; } }
 function makeRNG(seed){ const seedFn=xmur3(String(seed||Math.random())); return mulberry32(seedFn()); }
@@ -15,7 +29,13 @@ function randRange(rng, min, max){ return rng()*(max-min)+min; }
 function distance(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy); }
 function lerp(a, b, t) { return { x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t }; }
 
-function makePlayers(aiCount) { const ps = [{ id: "p0", name: "You", color: OWNER_COLORS[0], kind: "human" }]; for (let i=0;i<aiCount;i++) ps.push({ id: `p${i+1}`, name: `AI ${i+1}` , color: OWNER_COLORS[(i+1)%OWNER_COLORS.length], kind: "ai" }); return ps; }
+// ==== Game setup helpers ====
+function makePlayers(aiCount) {
+    const ps = [{ id: "p0", name: "You", color: OWNER_COLORS[0], kind: "human" }];
+    for (let i=0;i<aiCount;i++)
+        ps.push({ id: `p${i+1}`, name: `AI ${i+1}` , color: OWNER_COLORS[(i+1)%OWNER_COLORS.length], kind: "ai" });
+    return ps;
+}
 
 function generateGraphFlexible(planets, rng=makeRNG()) {
     const N = planets.length;
@@ -24,12 +44,34 @@ function generateGraphFlexible(planets, rng=makeRNG()) {
     function edges(){ const list=[]; for(let i=0;i<N;i++){ for(const j of adj[i]) if (i<j) list.push([i,j]); } return list; }
     function orient(a,b,c){ return (planets[b].x-planets[a].x)*(planets[c].y-planets[a].y) - (planets[b].y-planets[a].y)*(planets[c].x-planets[a].x); }
     function onSeg(a,b,c){ const pa=planets[a], pb=planets[b], pc=planets[c]; return Math.min(pa.x,pb.x)<=pc.x && pc.x<=Math.max(pa.x,pb.x) && Math.min(pa.y,pb.y)<=pc.y && pc.y<=Math.max(pa.y,pb.y); }
-    function segmentsCross(a,b,c,d){ if (a===c||a===d||b===c||b===d) return false; const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b); if (o1===0 && onSeg(a,b,c)) return false; if (o2===0 && onSeg(a,b,d)) return false; if (o3===0 && onSeg(c,d,a)) return false; if (o4===0 && onSeg(c,d,b)) return false; return (o1>0)!==(o2>0) && (o3>0)!==(o4>0); }
-    for (let i=0;i<N;i++) { let bestJ=-1, bestD=Infinity; for (let j=0;j<N;j++){ if (j===i) continue; const d=distance(planets[i], planets[j]); if (d<bestD){bestD=d; bestJ=j;} } if (bestJ>=0) addEdge(i,bestJ); }
+    function segmentsCross(a,b,c,d){
+        if (a===c||a===d||b===c||b===d) return false;
+        const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b);
+        if (o1===0 && onSeg(a,b,c)) return false; if (o2===0 && onSeg(a,b,d)) return false;
+        if (o3===0 && onSeg(c,d,a)) return false; if (o4===0 && onSeg(c,d,b)) return false;
+        return (o1>0)!==(o2>0) && (o3>0)!==(o4>0);
+    }
+    for (let i=0;i<N;i++) {
+        let bestJ=-1, bestD=Infinity;
+        for (let j=0;j<N;j++){ if (j===i) continue; const d=distance(planets[i], planets[j]); if (d<bestD){bestD=d; bestJ=j;} }
+        if (bestJ>=0) addEdge(i,bestJ);
+    }
     const minDeg=1, maxDeg=4;
     const targets = Array.from({length:N}, () => Math.floor(randRange(rng, minDeg, maxDeg+1)));
-    for (let i=0;i<N;i++) { const here = planets[i]; const order = planets.map((p,j)=>({j, d: j===i?Infinity:distance(here,p)})).sort((a,b)=>a.d-b.d); let idx=0; while (adj[i].length < targets[i] && idx < order.length){ const j = order[idx++].j; addEdge(i,j); } }
-    let changed=true, guard=0; while(changed && guard<100){ changed=false; guard++; const es=edges(); for (let a=0;a<es.length;a++){ for (let b=a+1;b<es.length;b++){ const [i,j]=es[a], [u,v]=es[b]; if (segmentsCross(i,j,u,v)) { const dij=distance(planets[i],planets[j]); const duv=distance(planets[u],planets[v]); const rem = dij>duv ? [i,j] : [u,v]; const ix=rem[0], jx=rem[1]; adj[ix]=adj[ix].filter(n=>n!==jx); adj[jx]=adj[jx].filter(n=>n!==ix); changed=true; } } } }
+    for (let i=0;i<N;i++) {
+        const here = planets[i];
+        const order = planets.map((p,j)=>({j, d: j===i?Infinity:distance(here,p)})).sort((a,b)=>a.d-b.d);
+        let idx=0; while (adj[i].length < targets[i] && idx < order.length){ const j = order[idx++].j; addEdge(i,j); }
+    }
+    let changed=true, guard=0; while(changed && guard<100){ changed=false; guard++; const es=edges();
+        for (let a=0;a<es.length;a++){ for (let b=a+1;b<es.length;b++){ const [i,j]=es[a], [u,v]=es[b];
+            if (segmentsCross(i,j,u,v)) {
+                const dij=distance(planets[i],planets[j]); const duv=distance(planets[u],planets[v]);
+                const rem = dij>duv ? [i,j] : [u,v];
+                const ix=rem[0], jx=rem[1];
+                adj[ix]=adj[ix].filter(n=>n!==jx); adj[jx]=adj[jx].filter(n=>n!==ix); changed=true;
+            }
+        }}}
     return adj.map(ns => ns.map(j => planets[j].id));
 }
 
@@ -43,7 +85,13 @@ function ensureGlobalConnectivity(planets, neighborIds){
     }
     function orient(a,b,c){ return (planets[b].x-planets[a].x)*(planets[c].y-planets[a].y) - (planets[b].y-planets[a].y)*(planets[c].x-planets[a].x); }
     function onSeg(a,b,c){ const pa=planets[a], pb=planets[b], pc=planets[c]; return Math.min(pa.x,pb.x)<=pc.x && pc.x<=Math.max(pa.x,pb.x) && Math.min(pa.y,pb.y)<=pc.y && pc.y<=Math.max(pa.y,pb.y); }
-    function segmentsCross(a,b,c,d){ if (a===c||a===d||b===c||b===d) return false; const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b); if (o1===0 && onSeg(a,b,c)) return false; if (o2===0 && onSeg(a,b,d)) return false; if (o3===0 && onSeg(c,d,a)) return false; if (o4===0 && onSeg(c,d,b)) return false; return (o1>0)!==(o2>0) && (o3>0)!==(o4>0); }
+    function segmentsCross(a,b,c,d){
+        if (a===c||a===d||b===c||b===d) return false;
+        const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b);
+        if (o1===0 && onSeg(a,b,c)) return false; if (o2===0 && onSeg(a,b,d)) return false;
+        if (o3===0 && onSeg(c,d,a)) return false; if (o4===0 && onSeg(c,d,b)) return false;
+        return (o1>0)!==(o2>0) && (o3>0)!==(o4>0);
+    }
     function edges(){ const list=[]; for(let i=0;i<n;i++){ for(const j of adj[i]) if (i<j) list.push([i,j]); } return list; }
     const parent = Array.from({length:n}, (_,i)=>i);
     function find(x){ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; }
@@ -135,7 +183,6 @@ function circumcenter(ax, ay, bx, by, cx, cy) {
     const uy = ((ax*ax + ay*ay)*(cx-bx) + (bx*bx + by*by)*(ax-cx) + (cx*cx + cy*cy)*(bx-ax)) / d;
     return [ux, uy];
 }
-
 /** Return finite Voronoi edge segments for each interior halfedge. */
 function voronoiSegments(delaunay) {
     const segs = [];
@@ -176,7 +223,6 @@ function winOdds(attacker, defenderShips, defenderType, STAR, underAttackTicks =
 }
 
 function isMirrorPlanet(p) { return p.starType === 'M'; }
-
 function getMirrorGroup(planets) {
     const idxs = [];
     planets.forEach((p, i) => { if (isMirrorPlanet(p)) idxs.push(i); });
@@ -184,9 +230,16 @@ function getMirrorGroup(planets) {
     const canonIdx = idxs.reduce((best, i) => planets[i].id < planets[best].id ? i : best, idxs[0]);
     return { idxs, canonIdx };
 }
-
 function isBorderPlanet(p, byId) {
     return p.neighbors.some(id => byId[id] && byId[id].owner !== p.owner);
+}
+
+// New: smarter min garrison based on degree + enemy adjacency
+function minGarrison(p, byId) {
+    const degree = (p.neighbors?.length || 0);
+    const base = 6 + Math.min(10, degree * 1.5); // 8..36
+    const enemyAdj = p.neighbors.some(id => byId[id] && byId[id].owner !== p.owner);
+    return enemyAdj ? base + 4 : base;
 }
 
 function planetValue(p, STAR) {
@@ -222,12 +275,6 @@ function computeFrontlineDistances(planets, ownerId) {
         }
     }
     return dist;
-}
-
-function inboundPlanCounts(planets) {
-    const m = new Map(); // targetId -> count
-    for (const p of planets) { if (p.routeTo) m.set(p.routeTo, (m.get(p.routeTo) || 0) + 1); }
-    return m;
 }
 
 function ensureAtLeastTwoMirrors(planets) {
@@ -300,6 +347,19 @@ function chooseMirrorRouteAndAnchor(arr, packetsRef, lockRef) {
     return { activeIdx: lockRef.current.activeIdx, to: lockRef.current.to };
 }
 
+function ownerFleetPowerMirrorAware(arr, ownerId) {
+    const { canonIdx } = getMirrorGroup(arr);
+    const mirrorCanonId = canonIdx != null ? arr[canonIdx].id : null;
+    let ships = 0, prod = 0;
+    for (const p of arr) {
+        if (p.owner !== ownerId) continue;
+        if (isMirrorPlanet(p) && p.id !== mirrorCanonId) continue; // skip mirror duplicates
+        ships += p.ships;
+        prod  += p.prod;
+    }
+    return { ships, prod };
+}
+
 export default function PaxFlowClassicLook() {
     const [scene, setScene] = useState('menu');
     const [aiCount, setAiCount] = useState(2);
@@ -319,7 +379,6 @@ export default function PaxFlowClassicLook() {
         return saved ? Math.min(1, Math.max(0, parseFloat(saved))) : 0.6;
     });
     const audioRef = useRef(null);
-
 
     const STAR = useMemo(()=>({
         Y:{name:"Yellow – Production×2",color:"#ffd34a",prod:2,label:"Y"},
@@ -354,7 +413,7 @@ export default function PaxFlowClassicLook() {
     const edgeSegs = useMemo(() => voronoiSegments(delaunay), [delaunay]);
 
     // AI sticky state
-    const aiStickMapRef = useRef(new Map()); // key: planetId, value: {to, untilTick}
+    const aiStickMapRef = useRef(new Map()); // key: planetId, value: {to, untilTick, burstCooldown?}
     const aiTickRef = useRef(0);
 
     // Mirror single-lane lock
@@ -433,7 +492,6 @@ export default function PaxFlowClassicLook() {
 
     const handleToggleMusic = () => setMusicOn(v => !v);
     const handleVolumeChange = (val) => setMusicVolume(val);
-
     function backToMenu() { setScene('menu'); }
 
     useEffect(() => {
@@ -471,14 +529,17 @@ export default function PaxFlowClassicLook() {
         setElapsed(0);
     }
 
+    // ====== MAIN ECON/COMBAT TICK (production + sending + fighting + mirror sync) ======
     useEffect(() => {
         if (scene!=='playing') return;
         if (paused) { pauseStartRef.current = Date.now(); }
         else { if (pauseStartRef.current) { pausedMsRef.current += Date.now() - pauseStartRef.current; pauseStartRef.current = 0; } }
+
         const timer = setInterval(() => {
             if (paused) return;
             setPlanets(ps => {
                 const arr = ps.map(p => ({...p, damaged:{...p.damaged}, invaders:{...p.invaders}, invadersEff:{...p.invadersEff}}));
+                const byIdSend = Object.fromEntries(arr.map(p => [p.id, p]));
 
                 // Production
                 for (const p of arr) if (p.owner !== 'neutral') {
@@ -486,8 +547,8 @@ export default function PaxFlowClassicLook() {
                     p.ships += p.prod * prodMul * worldSpeed;
                 }
 
-                // --- Sending (centralized for mirrors) ---
-                const GAR = 1;
+                // --- Sending (centralized for mirrors), with burst vs base ---
+                const GAR_DEFAULT = 1;
                 const { activeIdx: mirrorActiveIdx, to: mirrorTo } =
                     chooseMirrorRouteAndAnchor(arr, packetsRef, mirrorRouteLockRef);
 
@@ -495,36 +556,43 @@ export default function PaxFlowClassicLook() {
                     const p = arr[i];
                     if (p.owner === 'neutral') continue;
 
+                    // Mirror planets: only the active one sends
                     if (isMirrorPlanet(p)) {
                         if (i !== mirrorActiveIdx) continue;
                         if (!mirrorTo || !p.neighbors.includes(mirrorTo)) continue;
 
                         const moveFactor = (STAR[p.starType]?.move || 1);
-                        const desired = p.ships * 0.10 * moveFactor;
-                        const available = Math.max(0, p.ships - GAR);
+                        const desiredRate = (p.aiBurstFlag ? AI_BURST : AI_SEND_BASE) * moveFactor;
+                        const desired = p.ships * desiredRate;
+                        const available = Math.max(0, p.ships - GAR_DEFAULT);
                         const send = Math.min(desired, available);
                         if (send > 0.01) {
                             p.ships -= send;
                             const toNode = arr.find(q => q.id === mirrorTo);
                             if (toNode) queuePacket(p.id, toNode.id, p.owner, send, p, toNode, STAR);
                         }
+                        if (p.aiBurstFlag) { p.aiBurstFlag = false; }
                         arr[i] = { ...arr[i], routeTo: mirrorTo ?? null };
                         continue;
                     }
 
+                    // Normal planets
                     if (!p.routeTo || !p.neighbors.includes(p.routeTo)) {
                         if (p.routeTo) arr[i] = { ...p, routeTo: null };
                         continue;
                     }
                     const moveFactor = (STAR[p.starType]?.move || 1);
-                    const desired = p.ships * 0.10 * moveFactor;
-                    const available = Math.max(0, p.ships - GAR);
+                    const desiredRate = (p.aiBurstFlag ? AI_BURST : AI_SEND_BASE) * moveFactor;
+                    const desired = p.ships * desiredRate;
+                    const GARmin = minGarrison(p, byIdSend);
+                    const available = Math.max(0, p.ships - GARmin);
                     const send = Math.min(desired, available);
                     if (send > 0.01) {
                         p.ships -= send;
                         const to = arr.find(q => q.id === p.routeTo);
                         if (to) queuePacket(p.id, to.id, p.owner, send, p, to, STAR);
                     }
+                    if (p.aiBurstFlag) { p.aiBurstFlag = false; }
                 }
 
                 // Combat tick
@@ -605,7 +673,7 @@ export default function PaxFlowClassicLook() {
                     }
                 }
 
-                // Mirror sync: copy active anchor (or canon) state to other M copies
+                // Mirror sync
                 {
                     const { idxs: mirrorIdxs, canonIdx } = getMirrorGroup(arr);
                     const srcIdx = mirrorRouteLockRef.current.activeIdx ?? canonIdx;
@@ -631,8 +699,9 @@ export default function PaxFlowClassicLook() {
             });
         }, 1000);
         return () => clearInterval(timer);
-    }, [worldSpeed, paused, scene]);
+    }, [worldSpeed, paused, scene, STAR]);
 
+    // ====== PACKET PROGRESS (RAF) ======
     useEffect(() => {
         if (scene!=='playing') return;
         let last = performance.now();
@@ -646,6 +715,7 @@ export default function PaxFlowClassicLook() {
         return () => cancelAnimationFrame(rafRef.current);
     }, [worldSpeed, paused, scene]);
 
+    // ====== PACKET ARRIVALS ======
     useEffect(() => {
         if (scene!=='playing') return;
         setPackets(pkts => {
@@ -682,12 +752,9 @@ export default function PaxFlowClassicLook() {
         });
     });
 
+    // ====== AI PLANNER ======
     useEffect(() => {
         if (scene !== 'playing') return;
-
-        const PLAN_INTERVAL = 2200;
-        const SWITCH_COOLDOWN = 2;
-        const DANGER_GARRISON_BONUS = 15;
 
         const timer = setInterval(() => {
             if (paused) return;
@@ -696,17 +763,25 @@ export default function PaxFlowClassicLook() {
             setPlanets(ps => {
                 const arr = ps.map(p => ({ ...p }));
                 const byIdLocal = Object.fromEntries(arr.map(p => [p.id, p]));
-                const plannedInbound = inboundPlanCounts(arr);
+                // plan “amount” congestion per target
+                const plannedInboundAmt = new Map();
 
                 for (const pl of players) {
                     if (pl.kind !== 'ai') continue;
 
-                    const me = componentTotals(arr, pl.id);
-                    const rivals = players.filter(x => x.id !== pl.id);
-                    const theirShips = rivals.reduce((s, r) => s + componentTotals(arr, r.id).ships, 0);
+                    // const me = componentTotals(arr, pl.id);
+                    // const rivals = players.filter(x => x.id !== pl.id);
+                    // const theirShips = rivals.reduce((s, r) => s + componentTotals(arr, r.id).ships, 0);
+                    // const aggressive = me.ships > theirShips * 0.9;
+                    const me = ownerFleetPowerMirrorAware(arr, pl.id);
+                    const theirShips = players
+                        .filter(x => x.id !== pl.id)
+                        .reduce((s, r) => s + ownerFleetPowerMirrorAware(arr, r.id).ships, 0);
                     const aggressive = me.ships > theirShips * 0.9;
 
                     const distMap = computeFrontlineDistances(arr, pl.id);
+                    const nowSec = Math.floor((Date.now() - startTime.current - pausedMsRef.current) / 1000);
+                    const inOpening = nowSec < AI_OPENING_WINDOW_SEC;
 
                     // PASS 1: urgent defense
                     const urgent = arr.filter(p =>
@@ -723,14 +798,18 @@ export default function PaxFlowClassicLook() {
                             );
 
                         for (const d of donors) {
-                            const border = isBorderPlanet(d, byIdLocal);
-                            const need = border ? DANGER_GARRISON_BONUS : 10;
-                            if ((d.ships - need) > t.ships * 0.1) {
+                            const needed = minGarrison(d, byIdLocal);
+                            if ((d.ships - needed) > t.ships * 0.1) {
                                 const sticky = aiStickMapRef.current.get(d.id);
                                 if (!sticky || sticky.untilTick <= aiTickRef.current || sticky.to === t.id) {
-                                    aiStickMapRef.current.set(d.id, { to: t.id, untilTick: aiTickRef.current + SWITCH_COOLDOWN });
+                                    aiStickMapRef.current.set(d.id, { ...(sticky||{}), to: t.id, untilTick: aiTickRef.current + SWITCH_COOLDOWN });
                                     const idx = arr.findIndex(x => x.id === d.id);
-                                    if (idx >= 0) arr[idx] = { ...arr[idx], routeTo: t.id };
+                                    if (idx >= 0) arr[idx] = { ...arr[idx], routeTo: t.id, aiBurstFlag: true }; // prefer burst for saves
+                                    // add to congestion model
+                                    const moveFactor=(STAR[arr[idx].starType]?.move||1);
+                                    const rate=AI_BURST*moveFactor;
+                                    const sendable = Math.max(0, arr[idx].ships - minGarrison(arr[idx], byIdLocal)) * rate;
+                                    plannedInboundAmt.set(t.id, (plannedInboundAmt.get(t.id)||0) + sendable);
                                 }
                             }
                         }
@@ -741,20 +820,56 @@ export default function PaxFlowClassicLook() {
                         const p = arr[i];
                         if (p.owner !== pl.id) continue;
 
-                        const neighbors = p.neighbors.map(id => byIdLocal[id]).filter(Boolean);
-                        if (!neighbors.length) {
-                            arr[i] = { ...p, routeTo: null };
-                            continue;
+                        // Mirror canon routing preference: only let the canon decide
+                        if (isMirrorPlanet(p)) {
+                            const { canonIdx } = getMirrorGroup(arr);
+                            if (canonIdx != null && arr[canonIdx].owner === pl.id && i !== canonIdx) {
+                                // non-canon M will mirror later
+                                continue;
+                            }
                         }
 
+                        const neighbors = p.neighbors.map(id => byIdLocal[id]).filter(Boolean);
+                        if (!neighbors.length) { arr[i] = { ...p, routeTo: null }; continue; }
+
                         const border = isBorderPlanet(p, byIdLocal);
-                        const minGAR = border ? DANGER_GARRISON_BONUS : 10;
+                        const minGAR = minGarrison(p, byIdLocal);
                         if (p.ships <= minGAR) {
                             const sticky = aiStickMapRef.current.get(p.id);
                             if (!sticky || sticky.untilTick <= aiTickRef.current) {
                                 arr[i] = { ...p, routeTo: null };
                             }
                             continue;
+                        }
+
+                        // Opening book: if we're still in the opening and have neutral neighbors, hard-pick one and burst once
+                        if (inOpening) {
+                            const neutrals = neighbors.filter(nb => nb.owner === 'neutral');
+                            if (neutrals.length) {
+                                // score neutrals by value and how cheap they are to take
+                                neutrals.sort((a, b) => (
+                                    (8 * planetValue(b, STAR) - 0.35 * b.ships) -
+                                    (8 * planetValue(a, STAR) - 0.35 * a.ships)
+                                ));
+                                const target = neutrals[0];
+
+                                // set sticky + burst (ignore cooldowns in the opening)
+                                aiStickMapRef.current.set(p.id, {
+                                    to: target.id,
+                                    untilTick: aiTickRef.current + SWITCH_COOLDOWN,
+                                    burstCooldown: aiTickRef.current + AI_BURST_COOLDOWN_TICKS,
+                                });
+
+                                arr[i] = { ...p, routeTo: target.id, aiBurstFlag: true };
+
+                                // update congestion estimate for this choice
+                                const moveFactor = (STAR[p.starType]?.move || 1);
+                                const rate = AI_BURST * moveFactor;
+                                const sendable = Math.max(0, p.ships - minGAR) * rate;
+                                plannedInboundAmt.set(target.id, (plannedInboundAmt.get(target.id) || 0) + sendable);
+
+                                continue; // opening move chosen—skip the normal scoring for this planet this tick
+                            }
                         }
 
                         let best = null;
@@ -771,20 +886,27 @@ export default function PaxFlowClassicLook() {
                             } else if (nb.owner === 'neutral') {
                                 const val = planetValue(nb, STAR);
                                 sc += 35 + 8 * val - 0.25 * nb.ships;
+                                if (inOpening) {
+                                    if (nb.starType === 'Y') sc += 22;
+                                    if (nb.starType === 'G') sc += 12;
+                                }
                             } else {
                                 const mySendable = Math.max(0, p.ships - minGAR) * 0.6;
                                 const odds = winOdds(mySendable, nb.ships, nb.starType, STAR, nb.underAttackTicks);
                                 sc += (aggressive ? 28 : 12) * odds;
                                 if (isBorderPlanet(nb, byIdLocal)) sc += 6;
                                 sc += 3 * planetValue(nb, STAR);
+
+                                // Focus fire: if we're already invading, pile on
+                                const myInvading = (nb.invaders && (nb.invaders[pl.id]||0)) || 0;
+                                sc += Math.min(20, myInvading * 0.2);
                             }
 
                             // frontline gradient
                             if (hereD != null && nbD != null) sc += 12 * Math.max(0, hereD - nbD);
 
-                            // sink avoidance
-                            sc -= 0.02 * nb.ships;
-                            sc -= 4 * (plannedInbound.get(nb.id) || 0);
+                            // sink avoidance (amount-based congestion)
+                            sc -= 0.015 * (plannedInboundAmt.get(nb.id) || 0);
 
                             // stickiness
                             const sticky = aiStickMapRef.current.get(p.id);
@@ -799,32 +921,103 @@ export default function PaxFlowClassicLook() {
                             if (!best || sc > best.sc) best = { nb, sc };
                         }
 
-                        if (best) {
-                            const sticky = aiStickMapRef.current.get(p.id);
-                            const wantSwitch = !sticky ||
-                                sticky.untilTick <= aiTickRef.current ||
-                                sticky.to === best.nb.id;
-                            if (wantSwitch) {
-                                aiStickMapRef.current.set(p.id, { to: best.nb.id, untilTick: aiTickRef.current + SWITCH_COOLDOWN });
-                                arr[i] = { ...arr[i], routeTo: best.nb.id };
-                                plannedInbound.set(best.nb.id, (plannedInbound.get(best.nb.id) || 0) + 1);
+                        let fallback = null;
+                        if (!best) {
+                            const minGAR = minGarrison(p, byIdLocal);
+                            const mySendable = Math.max(0, p.ships - minGAR);
+                            const candidates = neighbors.filter(nb =>
+                                nb.owner !== pl.id && (nb.owner === 'neutral' || nb.ships < mySendable * 0.9)
+                            );
+                            if (candidates.length) {
+                                candidates.sort((a,b) => a.ships - b.ships); // prefer the softest target
+                                fallback = candidates[0];
                             }
+                        }
+
+                        if (best || fallback) {
+                            const target = best?.nb || fallback;
+
+                            // sticky / switching
+                            const sticky = aiStickMapRef.current.get(p.id) || {};
+                            const wantSwitch = !sticky || sticky.untilTick <= aiTickRef.current || sticky.to === target.id;
+
+                            if (wantSwitch) {
+                                const attacking = target.owner !== pl.id;
+                                const minGARLocal = minGarrison(p, byIdLocal);
+                                const mySendable = Math.max(0, p.ships - minGARLocal) * 0.6;
+
+                                // use ODDS_GO_* thresholds here
+                                const threshold = aggressive ? ODDS_GO_AGGR : ODDS_GO_SAFE;
+                                const odds = attacking
+                                    ? winOdds(mySendable, target.ships, target.starType, STAR, target.underAttackTicks)
+                                    : 0;
+
+                                const cooling = (sticky.burstCooldown || 0) > aiTickRef.current;
+                                const shouldBurst =
+                                    attacking &&
+                                    !cooling &&
+                                    (target.owner === 'neutral' || odds >= threshold);
+
+                                const nextSticky = { ...sticky, to: target.id, untilTick: aiTickRef.current + SWITCH_COOLDOWN };
+                                if (shouldBurst) nextSticky.burstCooldown = aiTickRef.current + AI_BURST_COOLDOWN_TICKS;
+                                aiStickMapRef.current.set(p.id, nextSticky);
+
+                                arr[i] = { ...p, routeTo: target.id, aiBurstFlag: shouldBurst };
+
+                                // update congestion estimate with the mode we picked (burst or base)
+                                const moveFactor = (STAR[p.starType]?.move || 1);
+                                const rate = (shouldBurst ? AI_BURST : AI_SEND_BASE) * moveFactor;
+                                const sendable = Math.max(0, p.ships - minGARLocal) * rate;
+                                plannedInboundAmt.set(target.id, (plannedInboundAmt.get(target.id) || 0) + sendable);
+                            }
+                            continue; // keep this
                         }
                     }
 
-                    // PASS 3: cut hopeless attacks
+                    // PASS 2.5: border reinforcement wave (send 1–2 nearest to endangered borders)
+                    for (const t of arr) {
+                        if (!t.owner || t.owner === 'neutral') continue;
+                        const danger = Object.entries(t.invaders||{}).some(([k,v]) => k!==t.owner && v>0);
+                        if (!danger) continue;
+                        if (t.owner !== pl.id) continue;
+
+                        const neighbors = t.neighbors.map(id => byIdLocal[id]).filter(nb => nb && nb.owner === t.owner);
+                        neighbors.sort((a,b) => estimateTravelSeconds(a,t,worldSpeed)-estimateTravelSeconds(b,t,worldSpeed));
+                        let assigned = 0;
+                        for (const d of neighbors) {
+                            if (assigned >= 2) break;
+                            const sticky = aiStickMapRef.current.get(d.id) || {};
+                            const cooling = (sticky.burstCooldown||0) > aiTickRef.current;
+                            aiStickMapRef.current.set(d.id, { ...sticky, to: t.id, untilTick: aiTickRef.current + SWITCH_COOLDOWN });
+                            const idx = arr.findIndex(x => x.id === d.id);
+                            if (idx >= 0) {
+                                arr[idx] = { ...arr[idx], routeTo: t.id, aiBurstFlag: !cooling };
+                                const moveFactor=(STAR[arr[idx].starType]?.move||1);
+                                const rate=((!cooling)?AI_BURST:AI_SEND_BASE)*moveFactor;
+                                const sendable = Math.max(0, arr[idx].ships - minGarrison(arr[idx], byIdLocal)) * rate;
+                                plannedInboundAmt.set(t.id, (plannedInboundAmt.get(t.id)||0) + sendable);
+                            }
+                            assigned++;
+                        }
+                    }
+
+                    // PASS 3: cut hopeless attacks (ETA-aware)
                     for (let i = 0; i < arr.length; i++) {
                         const p = arr[i];
                         if (p.owner !== pl.id || !p.routeTo) continue;
                         const to = byIdLocal[p.routeTo]; if (!to) continue;
 
                         if (to.owner !== pl.id && to.owner !== 'neutral') {
-                            const mySendable = Math.max(0, p.ships - (isBorderPlanet(p, byIdLocal) ? DANGER_GARRISON_BONUS : 10)) * 0.6;
-                            const odds = winOdds(mySendable, to.ships, to.starType, STAR, to.underAttackTicks);
-                            if (odds < (aggressive ? 0.55 : 0.8)) {
+                            const minGAR = minGarrison(p, byIdLocal);
+                            const mySendable = Math.max(0, p.ships - minGAR) * 0.6;
+                            const eta = estimateTravelSeconds(p, to, worldSpeed);
+                            const defGrowth = to.prod * ((STAR[to.starType]?.prod)||1) * (eta / 1.0);
+                            const projectedDef = to.ships + defGrowth;
+                            const oddsETA = winOdds(mySendable, projectedDef, to.starType, STAR, to.underAttackTicks);
+                            if (oddsETA < (aggressive ? ODDS_CANCEL_AGGR : ODDS_CANCEL_SAFE)) {
                                 const sticky = aiStickMapRef.current.get(p.id);
                                 if (!sticky || sticky.untilTick <= aiTickRef.current) {
-                                    arr[i] = { ...arr[i], routeTo: null };
+                                    arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
                                 }
                             }
                         }
@@ -838,7 +1031,7 @@ export default function PaxFlowClassicLook() {
         return () => clearInterval(timer);
     }, [players, worldSpeed, paused, scene, STAR]);
 
-    // Create the Audio element once
+    // ==== Audio ====
     useEffect(() => {
         if (!audioRef.current) {
             const a = new Audio(DEFAULT_MUSIC_URL);
@@ -847,7 +1040,6 @@ export default function PaxFlowClassicLook() {
             audioRef.current = a;
         }
         return () => {
-            // If this component ever unmounts entirely
             if (audioRef.current) {
                 audioRef.current.pause();
                 audioRef.current = null;
@@ -856,7 +1048,6 @@ export default function PaxFlowClassicLook() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // React to musicOn / musicVolume changes
     useEffect(() => {
         localStorage.setItem('pax_music_on', String(musicOn));
         localStorage.setItem('pax_music_vol', String(musicVolume));
@@ -866,21 +1057,14 @@ export default function PaxFlowClassicLook() {
         a.volume = musicVolume;
 
         if (musicOn) {
-            // Browser autoplay policies require a user gesture.
-            // Toggling the button is a gesture—so try playing, swallow any promise rejection.
             a.play().catch(() => {});
         } else {
             a.pause();
         }
     }, [musicOn, musicVolume]);
 
-    // Hotkey: 'M' to toggle music
     useEffect(() => {
-        const onKey = (e) => {
-            if (e.key === 'm' || e.key === 'M') {
-                setMusicOn((v) => !v);
-            }
-        };
+        const onKey = (e) => { if (e.key === 'm' || e.key === 'M') setMusicOn(v => !v); };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, []);
