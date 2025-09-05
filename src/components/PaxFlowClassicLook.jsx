@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Delaunay } from 'd3-delaunay';
 import DEFAULT_MUSIC_URL from '../assets/audio/leonell-cassio-the-sapphire-city-10450.mp3';
+import MenuScreen from "./MenuScreen";
 
 const WIDTH = 980;
 const HEIGHT = 600;
-const RADIUS = 20;
+const RADIUS = 10;
 const OWNER_COLORS = ["#63a6ff","#ff6b6b","#35d072","#ffd166","#b892ff","#ff8c42","#22d3ee","#f472b6","#a3e635","#f59e0b","#8b5cf6","#14b8a6","#ef4444","#10b981","#eab308","#3b82f6"];
 
 function xmur3(str){ let h=1779033703^str.length; for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=h<<13|h>>>19; } return function(){ h=Math.imul(h^h>>>16,2246822507); h=Math.imul(h^h>>>13,3266489909); h^=h>>>16; return h>>>0; } }
@@ -16,7 +17,7 @@ function lerp(a, b, t) { return { x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t }; 
 
 function makePlayers(aiCount) { const ps = [{ id: "p0", name: "You", color: OWNER_COLORS[0], kind: "human" }]; for (let i=0;i<aiCount;i++) ps.push({ id: `p${i+1}`, name: `AI ${i+1}` , color: OWNER_COLORS[(i+1)%OWNER_COLORS.length], kind: "ai" }); return ps; }
 
-function generateGraphFlexible(planets, neighborSpec, rng=makeRNG()) {
+function generateGraphFlexible(planets, rng=makeRNG()) {
     const N = planets.length;
     const adj = planets.map(()=>[]);
     function addEdge(i,j){ if (i===j) return; if (!adj[i].includes(j)) adj[i].push(j); if (!adj[j].includes(i)) adj[j].push(i); }
@@ -26,7 +27,7 @@ function generateGraphFlexible(planets, neighborSpec, rng=makeRNG()) {
     function segmentsCross(a,b,c,d){ if (a===c||a===d||b===c||b===d) return false; const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b); if (o1===0 && onSeg(a,b,c)) return false; if (o2===0 && onSeg(a,b,d)) return false; if (o3===0 && onSeg(c,d,a)) return false; if (o4===0 && onSeg(c,d,b)) return false; return (o1>0)!==(o2>0) && (o3>0)!==(o4>0); }
     for (let i=0;i<N;i++) { let bestJ=-1, bestD=Infinity; for (let j=0;j<N;j++){ if (j===i) continue; const d=distance(planets[i], planets[j]); if (d<bestD){bestD=d; bestJ=j;} } if (bestJ>=0) addEdge(i,bestJ); }
     const minDeg=1, maxDeg=4;
-    const targets = Array.from({length:N}, ()=>{ if (neighborSpec==='random') return Math.floor(randRange(rng, minDeg, maxDeg+1)); const k = Math.max(minDeg, Math.min(maxDeg, Number(neighborSpec)||3)); return k; });
+    const targets = Array.from({length:N}, () => Math.floor(randRange(rng, minDeg, maxDeg+1)));
     for (let i=0;i<N;i++) { const here = planets[i]; const order = planets.map((p,j)=>({j, d: j===i?Infinity:distance(here,p)})).sort((a,b)=>a.d-b.d); let idx=0; while (adj[i].length < targets[i] && idx < order.length){ const j = order[idx++].j; addEdge(i,j); } }
     let changed=true, guard=0; while(changed && guard<100){ changed=false; guard++; const es=edges(); for (let a=0;a<es.length;a++){ for (let b=a+1;b<es.length;b++){ const [i,j]=es[a], [u,v]=es[b]; if (segmentsCross(i,j,u,v)) { const dij=distance(planets[i],planets[j]); const duv=distance(planets[u],planets[v]); const rem = dij>duv ? [i,j] : [u,v]; const ix=rem[0], jx=rem[1]; adj[ix]=adj[ix].filter(n=>n!==jx); adj[jx]=adj[jx].filter(n=>n!==ix); changed=true; } } } }
     return adj.map(ns => ns.map(j => planets[j].id));
@@ -75,7 +76,7 @@ function ensureGlobalConnectivity(planets, neighborIds){
     return adj.map((nbrs,i)=> nbrs.map(j=> planets[j].id));
 }
 
-function generateMap(players, totalStars, neighborSpec, rng) {
+function generateMap(players, totalStars, rng) {
     const planets = [];
     const MIN_DIST = Math.max(60, RADIUS*3.2);
     for (let i=0; i<players.length; i++) {
@@ -95,7 +96,7 @@ function generateMap(players, totalStars, neighborSpec, rng) {
         if (!ok) continue;
         planets.push({ id: planets.length+1, x, y, owner: "neutral", ships: Math.floor(randRange(rng, 8, 24)), prod: 1.0, routeTo: null, neighbors: [], starType: 'O', damaged:{}, invaders:{}, invadersEff:{}, underAttackTicks:0 });
     }
-    let neighborIds = generateGraphFlexible(planets, neighborSpec, rng);
+    let neighborIds = generateGraphFlexible(planets, rng);
     neighborIds = ensureGlobalConnectivity(planets, neighborIds);
     for (let i=0;i<planets.length;i++) planets[i].neighbors = neighborIds[i];
     return planets;
@@ -104,8 +105,8 @@ function generateMap(players, totalStars, neighborSpec, rng) {
 function weightedPick(rng, w) { const total = Object.values(w).reduce((a,b)=>a+b,0); let r = rng()*total; for (const [k,v] of Object.entries(w)) { if ((r-=v) <= 0) return k; } return 'O'; }
 
 function generateMapWithTypes(players, totalStars, STAR, opts) {
-    const { neighborSpec=3, rng=makeRNG(), weightsPreset='balanced' } = opts || {};
-    const planets = generateMap(players, totalStars, neighborSpec, rng);
+    const { rng=makeRNG(), weightsPreset='balanced' } = opts || {};
+    const planets = generateMap(players, totalStars, rng);
     let weights;
     if (weightsPreset==='econ') {
         weights = { O:20, Y:26, B:20, V:8, R:8, G:12, M:1 };
@@ -158,56 +159,6 @@ function voronoiSegments(delaunay) {
     return segs;
 }
 
-function clipPoly(subject, clip) {
-    const out = [];
-    let prev = subject[subject.length - 1];
-    for (const curr of subject) {
-        let keepCurr = true;
-        let A = prev;
-        for (let i = 0; i < clip.length; i++) {
-            const B = clip[i], C = clip[(i+1)%clip.length];
-            const insideA = ((C.x-B.x)*(A.y-B.y) - (C.y-B.y)*(A.x-B.x)) >= 0;
-            const insideCurr = ((C.x-B.x)*(curr.y-B.y) - (C.y-B.y)*(curr.x-B.x)) >= 0;
-            if (insideA && insideCurr) {
-                // ok
-            } else if (insideA && !insideCurr) {
-                const inter = lineIntersect(A, curr, B, C);
-                if (inter) out.push(inter);
-                keepCurr = false;
-            } else if (!insideA && insideCurr) {
-                const inter = lineIntersect(A, curr, B, C);
-                if (inter) out.push(inter);
-            } else {
-                // outside->outside
-                keepCurr = false;
-            }
-            if (!keepCurr) break;
-        }
-        if (keepCurr) out.push(curr);
-        prev = curr;
-    }
-    return out;
-
-    function lineIntersect(P, Q, A, B) {
-        const r = {x: Q.x-P.x, y: Q.y-P.y};
-        const s = {x: B.x-A.x, y: B.y-A.y};
-        const denom = r.x*s.y - r.y*s.x;
-        if (Math.abs(denom) < 1e-6) return null;
-        const t = ((A.x-P.x)*s.y - (A.y-P.y)*s.x) / denom;
-        return {x: P.x + t*r.x, y: P.y + t*r.y};
-    }
-}
-
-function clipPolyWithCircle(poly, cx, cy, r, k = 32) {
-    const clip = [];
-    for (let i=0;i<k;i++){
-        const a = (i/k)*Math.PI*2;
-        clip.push({ x: cx + Math.cos(a)*r, y: cy + Math.sin(a)*r });
-    }
-    return clipPoly(poly, clip);
-}
-
-// --- AI helpers -------------------------------------------------------------
 function estimateTravelSeconds(a, b, worldSpeed) {
     const dist = distance(a, b);
     let edgeSpeed = 0.55 / Math.max(0.2, dist / 420);
@@ -351,25 +302,17 @@ function chooseMirrorRouteAndAnchor(arr, packetsRef, lockRef) {
 
 export default function PaxFlowClassicLook() {
     const [scene, setScene] = useState('menu');
-    const [menuAi, setMenuAi] = useState(2);
-    const [menuStars, setMenuStars] = useState(18);
-    const [menuNeighbors, setMenuNeighbors] = useState('3');
-    const [menuPreset, setMenuPreset] = useState('balanced');
-    const [menuSeed, setMenuSeed] = useState('PAX-' + Math.floor(Math.random()*9999));
     const [aiCount, setAiCount] = useState(2);
     const [totalStars, setTotalStars] = useState(18);
-    const [neighborSpec, setNeighborSpec] = useState(3);
     const [preset, setPreset] = useState('balanced');
-    const [seed, setSeed] = useState(menuSeed);
+    const [seed, setSeed] = useState(() => 'PAX-' + Math.floor(Math.random() * 9999));
     const [worldSpeed, setWorldSpeed] = useState(1);
-    const [showSpeed, setShowSpeed] = useState(false);
-    const [alwaysShowNeighbors, setAlwaysShowNeighbors] = useState(true);
     const [paused, setPaused] = useState(false);
     const players = useMemo(() => makePlayers(aiCount), [aiCount]);
-    // --- Music ---
     const [musicOn, setMusicOn] = useState(() => {
+        if (typeof window === 'undefined') return true;
         const saved = localStorage.getItem('pax_music_on');
-        return saved ? saved === 'true' : false;
+        return saved ? saved === 'true' : true;
     });
     const [musicVolume, setMusicVolume] = useState(() => {
         const saved = localStorage.getItem('pax_music_vol');
@@ -389,7 +332,7 @@ export default function PaxFlowClassicLook() {
     }), []);
 
     const rngRef = useRef(makeRNG(seed));
-    const [planets, setPlanets] = useState(() => generateMapWithTypes(players, totalStars, STAR, {neighborSpec, rng:rngRef.current, weightsPreset:preset}));
+    const [planets, setPlanets] = useState(() => generateMapWithTypes(players, totalStars, STAR, {rng:rngRef.current, weightsPreset:preset}));
     const [packets, setPackets] = useState([]);
     const packetsRef = useRef([]); useEffect(() => { packetsRef.current = packets; }, [packets]);
     const [selected, setSelected] = useState(null);
@@ -452,23 +395,30 @@ export default function PaxFlowClassicLook() {
         return polys;
     }, [vor, planets]);
 
-    function startGameFromMenu() {
-        setAiCount(menuAi);
-        setTotalStars(menuStars);
-        setPreset(menuPreset);
-        setSeed(menuSeed);
-        const spec = (menuNeighbors==='random') ? 'random' : Number(menuNeighbors);
-        setNeighborSpec(spec);
-        rngRef.current = makeRNG(menuSeed);
-        const newPlayers = makePlayers(menuAi);
+    function startGameFromMenu(settings) {
+        const { ai, stars, preset, seed } = settings;
+
+        setAiCount(ai);
+        setTotalStars(stars);
+        setPreset(preset);
+        setSeed(seed);
+
+        rngRef.current = makeRNG(seed);
+
+        const newPlayers = makePlayers(ai);
         const namePool = ["Orion","Lyra","Vega","Draco","Andromeda","Phoenix","Hydra","Cygnus","Sirius","Altair","Deneb","Antares","Rigel","Polaris","Aquila","Carina","Cassiopeia"];
-        const r = makeRNG(menuSeed + "-names");
+        const r = makeRNG(seed + "-names");
         const used = new Set();
-        const labels = {};
-        labels["p0"] = "You";
-        for (let i=1;i<newPlayers.length;i++){ let pick; let tries=0; do { pick = namePool[Math.floor(randRange(r,0,namePool.length))]; tries++; } while(used.has(pick) && tries<50); used.add(pick); labels[`p${i}`] = pick; }
+        const labels = { p0: "You" };
+        for (let i=1;i<newPlayers.length;i++){
+            let pick; let tries=0;
+            do { pick = namePool[Math.floor(randRange(r,0,namePool.length))]; tries++; } while(used.has(pick) && tries<50);
+            used.add(pick);
+            labels[`p${i}`] = pick;
+        }
         setPlayerLabels(labels);
-        setPlanets(generateMapWithTypes(newPlayers, menuStars, STAR, {neighborSpec: spec, rng: rngRef.current, weightsPreset: menuPreset}));
+
+        setPlanets(generateMapWithTypes(newPlayers, stars, STAR, { rng: rngRef.current, weightsPreset: preset }));
         setPackets([]);
         setSelected(null);
         setStatus("");
@@ -481,14 +431,15 @@ export default function PaxFlowClassicLook() {
         setScene('playing');
     }
 
+    const handleToggleMusic = () => setMusicOn(v => !v);
+    const handleVolumeChange = (val) => setMusicVolume(val);
+
     function backToMenu() { setScene('menu'); }
 
     useEffect(() => {
         const onKey = (e) => {
             if (scene!=='playing') return;
             if (e.key==='r' || e.key==='R') newMapSameSettings();
-            if (e.key==='s' || e.key==='S') setShowSpeed(v=>!v);
-            if (e.key==='h' || e.key==='H') setAlwaysShowNeighbors(v=>!v);
             if (e.code==='Space') { e.preventDefault(); setPaused(p=>!p); }
             if ((e.key==='x' || e.key==='X') && selected) {
                 setPlanets(ps => ps.map(q => q.id===selected.id ? { ...q, routeTo: null } : q));
@@ -510,7 +461,7 @@ export default function PaxFlowClassicLook() {
     function newMapSameSettings() {
         rngRef.current = makeRNG(Math.random().toString(36));
         const newPlayers = makePlayers(aiCount);
-        setPlanets(generateMapWithTypes(newPlayers, totalStars, STAR, {neighborSpec, rng: rngRef.current, weightsPreset: preset}));
+        setPlanets(generateMapWithTypes(newPlayers, totalStars, STAR, {rng: rngRef.current, weightsPreset: preset}));
         setPackets([]);
         setSelected(null);
         setStatus("");
@@ -536,7 +487,7 @@ export default function PaxFlowClassicLook() {
                 }
 
                 // --- Sending (centralized for mirrors) ---
-                const GAR = 10;
+                const GAR = 1;
                 const { activeIdx: mirrorActiveIdx, to: mirrorTo } =
                     chooseMirrorRouteAndAnchor(arr, packetsRef, mirrorRouteLockRef);
 
@@ -993,71 +944,13 @@ export default function PaxFlowClassicLook() {
 
     if (scene==='menu') {
         return (
-            <div className="w-full max-w-[980px] mx-auto p-6 text-slate-100">
-                <h1 className="text-2xl font-semibold mb-4">Pax Flow — Galaxy Setup</h1>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 rounded-xl border border-slate-700/60 bg-slate-900/50">
-                        <label className="block text-sm mb-1">AI Players</label>
-                        <input type="range" min="1" max="12" value={menuAi} onChange={e=>setMenuAi(parseInt(e.target.value))} className="w-full" />
-                        <div className="text-xs opacity-80 mt-1">{menuAi} AI</div>
-                        <label className="block text-sm mt-4 mb-1">Total Stars</label>
-                        <input type="range" min="12" max="120" value={menuStars} onChange={e=>setMenuStars(parseInt(e.target.value))} className="w-full" />
-                        <div className="text-xs opacity-80 mt-1">{menuStars} stars (includes players)</div>
-                        <label className="block text-sm mt-4 mb-1">Lane Density</label>
-                        <select className="w-full bg-slate-900/60 border border-slate-700 rounded p-2" value={menuNeighbors} onChange={e=>setMenuNeighbors(e.target.value)}>
-                            <option value="2">2 per star</option>
-                            <option value="3">3 per star</option>
-                            <option value="4">4 per star</option>
-                            <option value="5">5 per star</option>
-                            <option value="random">Random (1–4)</option>
-                        </select>
-                        <label className="block text-sm mt-4 mb-1">Star Distribution</label>
-                        <select className="w-full bg-slate-900/60 border border-slate-700 rounded p-2" value={menuPreset} onChange={e=>setMenuPreset(e.target.value)}>
-                            <option value="balanced">Balanced</option>
-                            <option value="econ">Economy-Heavy (Y/B)</option>
-                            <option value="combat">Combat-Heavy (R/G)</option>
-                            <option value="tele">Mirror-Rich</option>
-                        </select>
-                        <label className="block text-sm mt-4 mb-1">Seed (reproducible maps)</label>
-                        <input className="w-full bg-slate-900/60 border border-slate-700 rounded p-2" value={menuSeed} onChange={e=>setMenuSeed(e.target.value)} />
-                    </div>
-                    <div className="p-4 rounded-xl border border-slate-700/60 bg-slate-900/50">
-                        <div className="text-sm opacity-80 mb-2">How it works</div>
-                        <ul className="list-disc ml-5 text-sm opacity-80 space-y-1">
-                            <li>Owner boundaries (Voronoi) with per-star cap</li>
-                            <li>Hyperlanes restrict movement</li>
-                            <li>Mirrors (<b>M</b>): one shared planet shown in multiple places (white)</li>
-                            <li>Stockpile unless routed; ~10% moves/tick (Blue ~20%)</li>
-                            <li>Combat + retreats + repairs</li>
-                            <li>Spacebar pauses during play</li>
-                        </ul>
-                    </div>
-                </div>
-                <div className="mt-4 pt-4 border-t border-slate-700/50">
-                    <label className="block text-sm mb-1">Music</label>
-                    <div className="flex items-center gap-3">
-                        <button
-                            type="button"
-                            onClick={() => setMusicOn(v => !v)}
-                            className={`px-3 py-1 rounded-2xl border ${musicOn ? "bg-slate-800" : ""}`}
-                            title="Toggle music (M)"
-                        >
-                            {musicOn ? 'On' : 'Off'}
-                        </button>
-                        <input
-                            type="range"
-                            min="0" max="1" step="0.01"
-                            value={musicVolume}
-                            onChange={e => setMusicVolume(parseFloat(e.target.value))}
-                        />
-                    </div>
-                    <div className="text-xs opacity-70 mt-1">Press <b>M</b> to toggle</div>
-                </div>
-                <div className="mt-6 flex gap-3">
-                    <button onClick={startGameFromMenu} className="px-4 py-2 rounded-2xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Generate Galaxy</button>
-                    <button onClick={()=>setMenuSeed('PAX-'+Math.floor(Math.random()*9999))} className="px-4 py-2 rounded-2xl border border-slate-700">Randomize Seed</button>
-                </div>
-            </div>
+            <MenuScreen
+                musicOn={musicOn}
+                musicVolume={musicVolume}
+                onToggleMusic={handleToggleMusic}
+                onVolumeChange={handleVolumeChange}
+                onStart={startGameFromMenu}
+            />
         );
     }
 
