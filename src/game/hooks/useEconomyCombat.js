@@ -176,10 +176,13 @@ export function useEconomyCombat({
                         const defDam = p.damaged[oldOwner] || 0;
 
                         if (defDam > 0) {
-                            const neighbors = p.neighbors
-                                .map((id) => arr.find((q) => q.id === id))
-                                .filter((q) => q && q.owner === oldOwner);
-                            if (neighbors.length) {
+                            const canRetreat = oldOwner !== "neutral";
+                            const neighbors = canRetreat
+                                ? p.neighbors
+                                      .map((id) => arr.find((q) => q.id === id))
+                                      .filter((q) => q && q.owner === oldOwner)
+                                : [];
+                            if (canRetreat && neighbors.length) {
                                 const destroyed = defDam * 0.25;
                                 const retreating = defDam - destroyed;
                                 const per = retreating / neighbors.length;
@@ -187,17 +190,52 @@ export function useEconomyCombat({
                                     queueRetreatRef.current(p.id, nb.id, oldOwner, per, p, nb);
                                 }
                             } else {
-                                const captured = defDam * 0.5;
-                                p.ships += captured;
+                                // No friendly worlds to fall back to; defenders are spent in place
                             }
                             p.damaged[oldOwner] = 0;
                         }
 
                         p.owner = winner;
                         p.routeTo = null;
-                        p.ships += remainingInv;
+                        const survivingInvaders = invKeys.map((ownerId) => ({
+                            ownerId,
+                            amount: Math.max(0, p.invaders[ownerId] || 0),
+                            eff: Math.max(0, p.invadersEff[ownerId] || 0),
+                        }));
+                        const remainingHostileInvaders = [];
+
+                        const friendlyNeighborsByOwner = new Map();
+                        for (const ownerId of new Set(invKeys)) {
+                            const friendlyNeighbors = p.neighbors
+                                .map((id) => arr.find((q) => q.id === id))
+                                .filter((q) => q && q.owner === ownerId);
+                            friendlyNeighborsByOwner.set(ownerId, friendlyNeighbors);
+                        }
+
+                        for (const { ownerId, amount, eff } of survivingInvaders) {
+                            if (amount <= 0) continue;
+                            if (ownerId === winner) {
+                                p.ships += amount;
+                                continue;
+                            }
+                            const friendlyNeighbors = friendlyNeighborsByOwner.get(ownerId) || [];
+                            if (friendlyNeighbors.length > 0) {
+                                const per = amount / friendlyNeighbors.length;
+                                for (const nb of friendlyNeighbors) {
+                                    queueRetreatRef.current(p.id, nb.id, ownerId, per, p, nb);
+                                }
+                            } else {
+                                remainingHostileInvaders.push({ ownerId, amount, eff });
+                            }
+                        }
+
+                        p.ships = Math.max(0, p.ships);
                         p.invaders = {};
                         p.invadersEff = {};
+                        for (const hostile of remainingHostileInvaders) {
+                            p.invaders[hostile.ownerId] = (p.invaders[hostile.ownerId] || 0) + hostile.amount;
+                            p.invadersEff[hostile.ownerId] = (p.invadersEff[hostile.ownerId] || 0) + hostile.eff;
+                        }
                         p.underAttackTicks = 0;
                     } else if (remainingInv <= 0) {
                         for (const k of Object.keys(p.damaged)) if (k !== p.owner) delete p.damaged[k];

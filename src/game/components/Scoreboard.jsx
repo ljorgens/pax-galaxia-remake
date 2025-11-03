@@ -58,7 +58,7 @@ export default function Scoreboard({ planets, packets, players, STAR }) {
                   className="inline-block w-3 h-3 rounded-full"
                   style={{ background: row.color }}
               />
-                            <span>{row.name}</span>
+                            <span>{row.kind === "human" ? `${row.name} (You)` : row.name}</span>
                         </div>
                         <div>{row.kind === "human" ? "Human" : "Computer"}</div>
                         <div className="font-semibold">{fmt(row.armies)}</div>

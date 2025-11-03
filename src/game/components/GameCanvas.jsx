@@ -43,6 +43,7 @@ export default function GameCanvas({
                                        elapsed,
                                        ownerColorsOverride, // optional
                                        starfield, // optional precomputed array of {x,y,r,o}
+                                       battleStats = {},
                                    }) {
     const ownerColor = (o) =>
         o === "neutral"
@@ -317,6 +318,7 @@ export default function GameCanvas({
             {planets.map((p) => {
                 const neighborHighlight = selected && isNeighbor(selected, p);
                 const under = Object.keys(p.invaders).some((k) => k !== p.owner && p.invaders[k] > 0);
+                const battle = battleStats?.[p.id];
                 return (
                     <g
                         key={p.id}
@@ -370,6 +372,18 @@ export default function GameCanvas({
                                 Math.round(p.prod * (p.starType === "Y" ? 2 : 1) * 10) / 10
                             )}`}
                         </text>
+
+                        {battle && (
+                            <text
+                                x={p.x}
+                                y={p.y + RADIUS + 18}
+                                textAnchor="middle"
+                                fontSize={11}
+                                fill={ownerColor(battle.primaryAttackerId)}
+                            >
+                                {`Atk ${fmt(Math.floor(battle.attackerShips))}`}
+                            </text>
+                        )}
                     </g>
                 );
             })}

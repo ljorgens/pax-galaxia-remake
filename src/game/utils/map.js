@@ -3,9 +3,54 @@ import { WIDTH, HEIGHT, RADIUS } from "../constants.js";
 import { makeRNG, randRange, distance } from "./math";
 import { generateGraphFlexible, ensureGlobalConnectivity } from "./graph";
 
-export function makePlayers(aiCount, OWNER_COLORS){
-    const ps = [{ id: "p0", name: "You", color: OWNER_COLORS[0], kind: "human" }];
-    for (let i=0;i<aiCount;i++) ps.push({ id: `p${i+1}`, name: `AI ${i+1}`, color: OWNER_COLORS[(i+1)%OWNER_COLORS.length], kind: "ai" });
+const NAME_POOL = [
+    "Captain Vega",
+    "Commander Lyra",
+    "Admiral Corvus",
+    "Strategist Nyx",
+    "Marshal Orion",
+    "Commodore Atria",
+    "Overseer Kael",
+    "Director Solin",
+    "Navigator Rhea",
+    "Legate Arden",
+    "Warlord Cassian",
+    "Baroness Elara",
+    "Vizier Thorne",
+    "High Captain Mirel",
+    "Archon Selene",
+    "Executor Varek",
+    "Consul Idrin",
+    "Magister Lio",
+    "Praetor Kalix",
+    "Seer Isra",
+];
+
+function makeNamePicker(rng) {
+    const available = [...NAME_POOL];
+    let counter = 0;
+    return () => {
+        if (available.length) {
+            const idx = Math.floor((rng() || 0) * available.length) % available.length;
+            return available.splice(idx, 1)[0];
+        }
+        counter += 1;
+        return `Commander ${counter}`;
+    };
+}
+
+export function makePlayers(aiCount, OWNER_COLORS, rng = Math.random){
+    const rngFn = typeof rng === "function" ? rng : Math.random;
+    const pickName = makeNamePicker(rngFn);
+    const ps = [{ id: "p0", name: pickName(), color: OWNER_COLORS[0], kind: "human" }];
+    for (let i=0;i<aiCount;i++) {
+        ps.push({
+            id: `p${i+1}`,
+            name: pickName(),
+            color: OWNER_COLORS[(i+1)%OWNER_COLORS.length],
+            kind: "ai",
+        });
+    }
     return ps;
 }
 
