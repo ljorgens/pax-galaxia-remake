@@ -50,6 +50,12 @@ export default function GameCanvas({
             ? "#9aa1ac"
             : (players.find((pl) => pl.id === o)?.color ||
                 (ownerColorsOverride ? ownerColorsOverride[o] : "#fff"));
+    const ownerLabel = (o) => {
+        if (o === "neutral") return "Neutral";
+        const pl = players.find((player) => player.id === o);
+        if (!pl) return o;
+        return pl.kind === "human" ? `${pl.name} (You)` : pl.name;
+    };
 
     // Build cell polygons map from passed vor
     const cellPolys = useMemo(() => {
@@ -373,17 +379,23 @@ export default function GameCanvas({
                             )}`}
                         </text>
 
-                        {battle && (
-                            <text
-                                x={p.x}
-                                y={p.y + RADIUS + 18}
-                                textAnchor="middle"
-                                fontSize={11}
-                                fill={ownerColor(battle.primaryAttackerId)}
-                            >
-                                {`Atk ${fmt(Math.floor(battle.attackerShips))}`}
-                            </text>
-                        )}
+                        {battle?.attackers?.length
+                            ? battle.attackers
+                                  .slice()
+                                  .sort((a, b) => b.ships - a.ships)
+                                  .map((attacker, idx) => (
+                                      <text
+                                          key={`${p.id}-atk-${attacker.ownerId}`}
+                                          x={p.x}
+                                          y={p.y + RADIUS + 18 + idx * 12}
+                                          textAnchor="middle"
+                                          fontSize={11}
+                                          fill={ownerColor(attacker.ownerId)}
+                                      >
+                                          {`Atk ${fmt(Math.floor(attacker.ships))} – ${ownerLabel(attacker.ownerId)}`}
+                                      </text>
+                                  ))
+                            : null}
                     </g>
                 );
             })}

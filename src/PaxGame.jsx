@@ -86,14 +86,16 @@ export default function PaxGame(){
             );
             if (!invEntries.length) continue;
 
-            const totalInvaders = invEntries.reduce((sum, [, amount]) => sum + amount, 0);
-            const totalEff = invEntries.reduce(
-                (sum, [owner]) => sum + (planet.invadersEff?.[owner] || 0),
-                0
-            );
-            const [primaryOwner] = invEntries.reduce(
-                (best, entry) => (entry[1] > best[1] ? entry : best),
-                invEntries[0]
+            const attackers = invEntries.map(([owner, amount]) => ({
+                ownerId: owner,
+                ships: amount,
+                eff: planet.invadersEff?.[owner] || 0,
+            }));
+            const totalInvaders = attackers.reduce((sum, { ships }) => sum + ships, 0);
+            const totalEff = attackers.reduce((sum, { eff }) => sum + eff, 0);
+            const primaryAttacker = attackers.reduce(
+                (best, current) => (current.ships > best.ships ? current : best),
+                attackers[0]
             );
             const defenseMult = (STAR[planet.starType]?.defense || 1) * 1.2;
             stats[planet.id] = {
@@ -101,7 +103,8 @@ export default function PaxGame(){
                 defenderEff: planet.ships * defenseMult,
                 attackerShips: totalInvaders,
                 attackerEff: totalEff,
-                primaryAttackerId: primaryOwner,
+                primaryAttackerId: primaryAttacker?.ownerId,
+                attackers,
             };
         }
         return stats;
