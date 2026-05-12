@@ -146,7 +146,7 @@ export function useAIPlanner({
                                 const g = minGarrison(f, byId);
                                 if ((f.ships || 0) - g <= 0) continue;
                                 const i = arr.findIndex((z) => z.id === f.id);
-                                if (i >= 0) arr[i] = { ...arr[i], routeTo: enemy.id, aiBurstFlag: true };
+                                if (i >= 0) arr[i] = { ...arr[i], routeTo: enemy.id };
                             }
                         }
                     }
@@ -170,8 +170,8 @@ export function useAIPlanner({
                                 const g = minGarrison(p, byId);
                                 const mySendable = Math.max(0, (p.ships || 0) - g);
                                 const ratioNow = mySendable / Math.max(1, t.ships || 0);
-                                if (ratioNow < 1.5) arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
-                                else               arr[i] = { ...p, aiBurstFlag: true };
+                                if (ratioNow < 1.5) arr[i] = { ...p, routeTo: null };
+                                else               arr[i] = { ...p };
                                 continue;
                             }
                         }
@@ -182,13 +182,13 @@ export function useAIPlanner({
                             const g = minGarrison(p, byId);
                             const mySendable = Math.max(0, (p.ships || 0) - g);
                             if (mySendable >= 2 * Math.max(1, e.ships || 0)) {
-                                arr[i] = { ...p, routeTo: e.id, aiBurstFlag: true };
+                                arr[i] = { ...p, routeTo: e.id };
                             } else if (p.routeTo === e.id) {
                                 const ratioNow = mySendable / Math.max(1, e.ships || 0);
-                                if (ratioNow < 1.5) arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
-                                else                arr[i] = { ...p, aiBurstFlag: true };
+                                if (ratioNow < 1.5) arr[i] = { ...p, routeTo: null };
+                                else                arr[i] = { ...p };
                             } else {
-                                arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
+                                arr[i] = { ...p, routeTo: null };
                             }
                             continue;
                         }
@@ -203,10 +203,10 @@ export function useAIPlanner({
                                 // choose weakest adjacent non-friendly (neutral included as valid target)
                                 const target = [...enemies].sort(preferLowShipsThenId)[0];
                                 const ratioNow = mySendable / Math.max(1, target.ships || 0);
-                                if (ratioNow >= 1.5) arr[i] = { ...p, routeTo: target.id, aiBurstFlag: true };
-                                else                 arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
+                                if (ratioNow >= 1.5) arr[i] = { ...p, routeTo: target.id };
+                                else                 arr[i] = { ...p, routeTo: null };
                             } else {
-                                arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
+                                arr[i] = { ...p, routeTo: null };
                             }
                             continue;
                         }
@@ -214,13 +214,13 @@ export function useAIPlanner({
                         // Rear planet: push toward nearest border (where border includes neutrals as "opponents")
                         const dHere = distMap.get(p.id);
                         if (dHere == null) {
-                            arr[i] = { ...p, routeTo: null, aiBurstFlag: false };
+                            arr[i] = { ...p, routeTo: null };
                             continue;
                         }
                         const step = neighborTowardBorder(p, distMap, byId);
                         arr[i] = step
-                            ? { ...p, routeTo: step.id, aiBurstFlag: false }
-                            : { ...p, routeTo: null, aiBurstFlag: false };
+                            ? { ...p, routeTo: step.id }
+                            : { ...p, routeTo: null };
                     }
                 }
 

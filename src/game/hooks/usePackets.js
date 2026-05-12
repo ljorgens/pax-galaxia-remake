@@ -1,15 +1,56 @@
 // game/hooks/usePackets.js
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { distance } from "../utils/math";
 
+function newId() {
+    return (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+}
+
+// Pure packet builders — call these to construct a packet object without
+// side-effects, then dispatch the resulting array via setPackets in one go.
+// Keeping construction pure is what lets the 1s economy tick stay
+// StrictMode-safe (the setPlanets updater can build outgoing packets in a
+// local buffer and the orchestrator dispatches setPackets afterwards).
+export function buildPacket(fromId, toId, owner, amount, a, b, STAR) {
+    const dist = distance(a, b);
+    return {
+        id: newId(),
+        from: fromId,
+        to: toId,
+        owner,
+        amount,
+        t: 0,
+        speed: 0.55 / Math.max(0.2, dist / 420),
+        atkMult: STAR[a.starType]?.attack || 1,
+        srcType: a.starType,
+    };
+}
+
+export function buildRetreat(fromId, toId, owner, amount, a, b) {
+    const dist = distance(a, b);
+    return {
+        id: newId(),
+        from: fromId,
+        to: toId,
+        owner,
+        amount,
+        t: 0,
+        speed: 0.55 / Math.max(0.2, dist / 420),
+        atkMult: 1,
+        srcType: a.starType,
+        retreat: true,
+    };
+}
+
 /**
- * Handles RAF-based packet progression and exposes queue helpers.
- * Props: { scene, paused, worldSpeed, setPackets, byId }
+ * RAF-based packet progression. Advances each packet's `t` per frame.
+ * Arrivals (t >= 1) are picked up by useEconomyCombat's arrival effect.
  */
-export function usePackets({ scene, paused, worldSpeed, setPackets, byId }) {
+export function usePackets({ scene, paused, worldSpeed, setPackets }) {
     const rafRef = useRef(0);
 
-    // RAF progress loop
     useEffect(() => {
         if (scene !== "playing") return;
 
@@ -31,46 +72,4 @@ export function usePackets({ scene, paused, worldSpeed, setPackets, byId }) {
         rafRef.current = requestAnimationFrame(step);
         return () => cancelAnimationFrame(rafRef.current);
     }, [scene, paused, worldSpeed, setPackets]);
-
-    const queuePacket = useCallback((fromId, toId, owner, amount, a, b, STAR) => {
-        const dist = distance(a, b);
-        const edgeSpeed = 0.55 / Math.max(0.2, dist / 420);
-        const atkMult = (STAR[a.starType]?.attack || 1);
-        setPackets((pk) => [
-            ...pk,
-            {
-                id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Math.random(),
-                from: fromId,
-                to: toId,
-                owner,
-                amount,
-                t: 0,
-                speed: edgeSpeed,
-                atkMult,
-                srcType: a.starType,
-            },
-        ]);
-    }, [setPackets]);
-
-    const queueRetreat = useCallback((fromId, toId, owner, amount, a, b) => {
-        const dist = distance(a, b);
-        const edgeSpeed = 0.55 / Math.max(0.2, dist / 420);
-        setPackets((pk) => [
-            ...pk,
-            {
-                id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Math.random(),
-                from: fromId,
-                to: toId,
-                owner,
-                amount,
-                t: 0,
-                speed: edgeSpeed,
-                atkMult: 1,
-                srcType: a.starType,
-                retreat: true,
-            },
-        ]);
-    }, [setPackets]);
-
-    return { queuePacket, queueRetreat };
 }

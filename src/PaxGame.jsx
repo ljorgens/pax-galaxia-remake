@@ -113,11 +113,11 @@ export default function PaxGame(){
         return stats;
     }, [planets, STAR]);
 
-    // packets helper
-    const { queuePacket, queueRetreat } = usePackets({ scene, paused, worldSpeed, setPackets, byId });
+    // packets RAF progression (advances each packet's t; arrivals handled in useEconomyCombat)
+    usePackets({ scene, paused, worldSpeed, setPackets });
 
     // economy/combat main loop
-    useEconomyCombat({ scene, paused, worldSpeed, STAR, packets, packetsRef, setPackets, setPlanets, queuePacket, queueRetreat });
+    useEconomyCombat({ scene, paused, worldSpeed, STAR, packets, packetsRef, setPackets, setPlanets });
 
     // AI planner
     useAIPlanner({ scene, paused, players, worldSpeed, STAR, startTime, pausedMsRef, setPlanets, aiStickMapRef, aiTickRef });
