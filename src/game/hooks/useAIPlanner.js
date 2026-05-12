@@ -1,6 +1,6 @@
 // game/hooks/useAIPlanner.js
 import { useEffect } from "react";
-import { PLAN_INTERVAL, AI_SEND_BASE, AI_BURST } from "../constants";
+import { PLAN_INTERVAL } from "../constants";
 
 // === CHANGE: treat neutral as opponent for most purposes
 function isEnemyOwner(owner, me) {
@@ -13,14 +13,15 @@ function idMap(planets) {
     return Object.fromEntries(planets.map((p) => [p.id, p]));
 }
 
+// AI-only advisory garrison. The sim itself has no garrison floor (original
+// Pax Galaxia lets you drain a planet to 0); this is just how the AI decides
+// when it has enough ships to safely route from a border world.
 function minGarrison(p, byId) {
-    const deg = (p.neighbors?.length || 0);
-    const base = 6 + Math.min(10, deg * 1.2);
     const enemyAdj = p.neighbors?.some((id) => {
         const n = byId[id];
         return n && isEnemyOwner(n.owner, p.owner);
     });
-    return base + (enemyAdj ? 6 : 0);
+    return enemyAdj ? 8 : 0;
 }
 
 function borderSet(planets, owner) {

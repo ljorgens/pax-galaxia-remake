@@ -12,8 +12,9 @@ export const OWNER_COLORS = [
 
 
 // AI tuning
-export const AI_SEND_BASE = 0.12;
-export const AI_BURST = 0.45;
+// Send rate is governed by the original integer rule (floor(ships/10)+1 per
+// tick, Blue 2x); see shipsToSend() in useEconomyCombat.js. Same rule for
+// players and AI — no AI bias.
 export const AI_BURST_COOLDOWN_TICKS = 6; // ~13s at PLAN_INTERVAL=2200ms
 export const AI_OPENING_WINDOW_SEC = 50;
 export const PLAN_INTERVAL = 2200;

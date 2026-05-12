@@ -1,5 +1,4 @@
 // game/utils/mirror.js
-import { isEqual } from "lodash-es"; // optional; you can avoid if you prefer
 
 export const isMirrorPlanet = (p) => p.starType === 'M';
 
@@ -16,6 +15,7 @@ export function displayShips(p, byId, planets){
 }
 
 // Single-lane lock across mirror instances
+// Allows quick switching: when no packets in flight, switch to whichever mirror has a route
 export function chooseMirrorRouteAndAnchor(arr, packetsRef, lockRef){
     const { idxs, canonIdx } = getMirrorGroup(arr);
     if (!idxs.length) return { activeIdx: null, to: null };
@@ -23,26 +23,28 @@ export function chooseMirrorRouteAndAnchor(arr, packetsRef, lockRef){
     const mirrorIds = idxs.map(i=>arr[i].id);
     const hasInflight = packetsRef.current.some(f => mirrorIds.includes(f.from) && !f.retreat && f.t<1);
 
+    // Find all mirrors with valid routes
     const candidates=[]; for (const i of idxs){ const to=arr[i].routeTo; if (to && arr[i].neighbors.includes(to)) candidates.push({i,to}); }
 
+    // Reset lock if owner changed
     if (lockRef.current.owner !== owner){ lockRef.current = { activeIdx:null, to:null, owner }; }
 
+    // No lock yet - pick first candidate
     if (lockRef.current.activeIdx == null){
-        const canonCand = candidates.find(c=>c.i===canonIdx);
-        const pick = canonCand ?? candidates[0] ?? null;
+        const pick = candidates[0] ?? null;
         lockRef.current.activeIdx = pick?.i ?? null;
         lockRef.current.to = pick?.to ?? null;
         lockRef.current.owner = owner;
     } else if (!hasInflight){
-        const stillValid = candidates.find(c => isEqual(c, { i: lockRef.current.activeIdx, to: lockRef.current.to }));
-        if (!stillValid){
-            const canonCand = candidates.find(c=>c.i===canonIdx);
-            const pick = canonCand ?? candidates[0] ?? null;
-            lockRef.current.activeIdx = pick?.i ?? null;
-            lockRef.current.to = pick?.to ?? null;
-            lockRef.current.owner = owner;
-        }
+        // No packets in flight - switch to whichever mirror has a route
+        // This enables quick switching when player sets route on different mirror
+        const pick = candidates[0] ?? null;
+        lockRef.current.activeIdx = pick?.i ?? null;
+        lockRef.current.to = pick?.to ?? null;
+        lockRef.current.owner = owner;
     }
+    // If packets are in flight, keep current lock (don't switch mid-send)
+
     return { activeIdx: lockRef.current.activeIdx, to: lockRef.current.to };
 }
 

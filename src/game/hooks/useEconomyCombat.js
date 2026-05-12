@@ -1,7 +1,17 @@
 // game/hooks/useEconomyCombat.js
 import { useEffect, useRef } from "react";
 import { chooseMirrorRouteAndAnchor, getMirrorGroup, isMirrorPlanet } from "../utils/mirror.js";
-import { AI_SEND_BASE, AI_BURST } from "../constants";
+
+// Original Pax Galaxia send rule (manual, Dio Games):
+//   "1-9 ships -> 1 moves; 10-19 -> 2; 20-29 -> 3; and so on" per tick.
+// = floor(ships / 10) + 1, then scaled by moveFactor (Blue = 2x).
+// No automatic garrison floor: a planet can drain to 0 if production can't keep up.
+function shipsToSend(p, STAR) {
+    if (p.ships < 1) return 0;
+    const moveFactor = STAR[p.starType]?.move || 1;
+    const base = Math.floor(p.ships / 10) + 1;
+    return Math.min(p.ships, base * moveFactor);
+}
 
 /**
  * Centralizes economy + combat:
@@ -39,7 +49,6 @@ export function useEconomyCombat({
         if (scene !== "playing") return;
 
         const timer = setInterval(() => {
-            if (process.env.NODE_ENV !== "production") console.log("[econ tick]");
             if (paused) return;
 
             setPlanets((ps) => {
@@ -51,15 +60,6 @@ export function useEconomyCombat({
                     invadersEff: { ...p.invadersEff },
                 }));
                 const byId = Object.fromEntries(arr.map((p) => [p.id, p]));
-
-                const GAR_DEFAULT_MIRROR = 1;
-
-                const minGarrison = (p) => {
-                    const degree = p.neighbors?.length || 0;
-                    const base = 6 + Math.min(10, degree * 1.5); // 8..36
-                    const enemyAdj = p.neighbors.some((id) => byId[id] && byId[id].owner !== p.owner);
-                    return enemyAdj ? base + 4 : base;
-                };
 
                 // 1) Production
                 for (const p of arr) {
@@ -79,46 +79,27 @@ export function useEconomyCombat({
                     const p = arr[i];
                     if (p.owner === "neutral") continue;
 
-                    // Mirror: only the active instance is allowed to send this tick
+                    let dest = null;
                     if (isMirrorPlanet(p)) {
+                        // Mirror: only the active instance may send this tick
                         if (i !== mirrorActiveIdx) continue;
                         if (!mirrorTo || !p.neighbors.includes(mirrorTo)) continue;
-
-                        const moveFactor = STAR[p.starType]?.move || 1;
-                        const rate = (p.aiBurstFlag ? AI_BURST : AI_SEND_BASE) * moveFactor;
-                        const desired = p.ships * rate;
-                        const available = Math.max(0, p.ships - GAR_DEFAULT_MIRROR);
-                        const send = Math.min(desired, available);
-
-                        if (send > 0.01) {
-                            p.ships -= send;
-                            const toNode = arr.find((q) => q.id === mirrorTo);
-                            if (toNode) queuePacketRef.current(p.id, toNode.id, p.owner, send, p, toNode, STAR);
+                        dest = mirrorTo;
+                    } else {
+                        if (!p.routeTo || !p.neighbors.includes(p.routeTo)) {
+                            if (p.routeTo) arr[i] = { ...p, routeTo: null };
+                            continue;
                         }
-                        if (p.aiBurstFlag) p.aiBurstFlag = false;
-                        arr[i] = { ...arr[i], routeTo: mirrorTo ?? null };
-                        continue;
+                        dest = p.routeTo;
                     }
 
-                    // Normal planets
-                    if (!p.routeTo || !p.neighbors.includes(p.routeTo)) {
-                        if (p.routeTo) arr[i] = { ...p, routeTo: null };
-                        continue;
-                    }
-
-                    const moveFactor = STAR[p.starType]?.move || 1;
-                    const rate = (p.aiBurstFlag ? AI_BURST : AI_SEND_BASE) * moveFactor;
-                    const desired = p.ships * rate;
-                    const GARmin = minGarrison(p);
-                    const available = Math.max(0, p.ships - GARmin);
-                    const send = Math.min(desired, available);
-
-                    if (send > 0.01) {
+                    const send = shipsToSend(p, STAR);
+                    if (send > 0) {
                         p.ships -= send;
-                        const to = arr.find((q) => q.id === p.routeTo);
+                        const to = byId[dest];
                         if (to) queuePacketRef.current(p.id, to.id, p.owner, send, p, to, STAR);
                     }
-                    if (p.aiBurstFlag) p.aiBurstFlag = false;
+                    if (isMirrorPlanet(p)) arr[i] = { ...arr[i], routeTo: mirrorTo ?? null };
                 }
 
                 // 3) Combat tick
@@ -130,12 +111,18 @@ export function useEconomyCombat({
                     if (!under) continue;
 
                     const atkEff = invKeys.reduce((s, k) => s + (p.invadersEff[k] || 0), 0);
-                    let defEff = p.ships * (STAR[p.starType]?.defense || 1);
-                    const BASE_DEF_BIAS = 1.2;
+
+                    // Green attackers cancel Red's defense bonus
+                    // If invadersEff > invaders for any attacker, they came from a green star
+                    const hasGreenAttacker = invKeys.some(k => (p.invadersEff[k] || 0) > (p.invaders[k] || 0) * 1.01);
+                    const defenseMultiplier = hasGreenAttacker ? 1 : (STAR[p.starType]?.defense || 1);
+
+                    let defEff = p.ships * defenseMultiplier;
+                    const BASE_DEF_BIAS = 1.5; // Original: need 1.5:1 to win on normal stars
                     defEff *= BASE_DEF_BIAS;
 
-                    const K_ATK = 0.22;
-                    const K_DEF = 0.30;
+                    const K_ATK = 0.25;
+                    const K_DEF = 0.25;
                     const defLoss = Math.min(p.ships, K_ATK * atkEff);
                     const atkLossTotal = Math.min(
                         invKeys.reduce((s, k) => s + p.invaders[k], 0),
@@ -159,7 +146,7 @@ export function useEconomyCombat({
                         p.invaders[k] = Math.max(0, before - loss);
 
                         const effBefore = p.invadersEff[k] || 0;
-                        const effFactor = (effBefore / (before + loss + 1e-6)) || 0;
+                        const effFactor = before > 0 ? (effBefore / before) : 1;
                         p.invadersEff[k] = Math.max(0, effBefore - loss * effFactor);
 
                         p.damaged[k] = (p.damaged[k] || 0) + loss * damageFrac;
@@ -190,7 +177,9 @@ export function useEconomyCombat({
                                     queueRetreatRef.current(p.id, nb.id, oldOwner, per, p, nb);
                                 }
                             } else {
-                                // No friendly worlds to fall back to; defenders are spent in place
+                                // Manual: if defender has no friendly neighbors,
+                                // the attacker takes control of the remaining damaged ships.
+                                p.damaged[winner] = (p.damaged[winner] || 0) + defDam;
                             }
                             p.damaged[oldOwner] = 0;
                         }
@@ -215,7 +204,20 @@ export function useEconomyCombat({
                         for (const { ownerId, amount, eff } of survivingInvaders) {
                             if (amount <= 0) continue;
                             if (ownerId === winner) {
-                                p.ships += amount;
+                                // Original Pax Galaxia: half stay, half return to origin
+                                // We send half back to friendly neighbors as approximation
+                                const winnerNeighbors = p.neighbors
+                                    .map((id) => arr.find((q) => q.id === id))
+                                    .filter((q) => q && q.owner === winner);
+                                const stayAmount = winnerNeighbors.length > 0 ? amount * 0.5 : amount;
+                                const returnAmount = amount - stayAmount;
+                                p.ships += stayAmount;
+                                if (returnAmount > 0 && winnerNeighbors.length > 0) {
+                                    const per = returnAmount / winnerNeighbors.length;
+                                    for (const nb of winnerNeighbors) {
+                                        queueRetreatRef.current(p.id, nb.id, winner, per, p, nb);
+                                    }
+                                }
                                 continue;
                             }
                             const friendlyNeighbors = friendlyNeighborsByOwner.get(ownerId) || [];
@@ -260,7 +262,9 @@ export function useEconomyCombat({
                     }
                 }
 
-                // 5) Mirror sync (clone canon across other instances)
+                // 5) Mirror sync (clone game state across other instances)
+                // Note: routeTo is NOT synced - each mirror keeps its own route
+                // so players can switch which mirror is active by setting a route on it
                 {
                     const { idxs: mirrorIdxs, canonIdx } = getMirrorGroup(arr);
                     const srcIdx = mirrorRouteLockRef.current.activeIdx ?? canonIdx;
@@ -276,7 +280,7 @@ export function useEconomyCombat({
                                 invaders: { ...src.invaders },
                                 invadersEff: { ...src.invadersEff },
                                 underAttackTicks: src.underAttackTicks,
-                                routeTo: src.routeTo ?? null,
+                                // routeTo intentionally NOT synced
                             };
                         }
                     }
@@ -339,14 +343,4 @@ export function useEconomyCombat({
             return inflight;
         });
     }, [scene, packets, setPackets, setPlanets]);
-}
-
-// (Optional) export for testing / reuse
-export function minGarrisonFactory(byId) {
-    return function minGarrison(p) {
-        const degree = p.neighbors?.length || 0;
-        const base = 6 + Math.min(10, degree * 1.5);
-        const enemyAdj = p.neighbors.some((id) => byId[id] && byId[id].owner !== p.owner);
-        return enemyAdj ? base + 4 : base;
-    };
 }

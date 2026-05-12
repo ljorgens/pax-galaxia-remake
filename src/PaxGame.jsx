@@ -97,7 +97,10 @@ export default function PaxGame(){
                 (best, current) => (current.ships > best.ships ? current : best),
                 attackers[0]
             );
-            const defenseMult = (STAR[planet.starType]?.defense || 1) * 1.2;
+            // Mirror the sim's defense math (useEconomyCombat.js): BASE_DEF_BIAS = 1.5,
+            // and Red's defense bonus is cancelled when any attacker came from a Green star.
+            const hasGreenAttacker = attackers.some(({ ships, eff }) => eff > ships * 1.01);
+            const defenseMult = (hasGreenAttacker ? 1 : (STAR[planet.starType]?.defense || 1)) * 1.5;
             stats[planet.id] = {
                 defenderShips: planet.ships,
                 defenderEff: planet.ships * defenseMult,
@@ -247,7 +250,19 @@ export default function PaxGame(){
         if (p.id===selected.id){ setPlanets(ps=>ps.map(q=> q.id===selected.id? { ...q, routeTo:null } : q)); setSelected(null); return; }
         const isNeighbor = (a,b)=> a.neighbors.includes(b.id);
         if (!isNeighbor(selected, p)){ setSelected(null); return; }
-        setPlanets(ps=>ps.map(q=> q.id===selected.id? { ...q, routeTo:p.id } : q)); setSelected(null);
+
+        // When setting route on a mirror, clear routes on other mirror instances
+        // so the player's intent is clear (this mirror should become active)
+        if (isMirrorPlanet(selected)) {
+            setPlanets(ps => ps.map(q => {
+                if (q.id === selected.id) return { ...q, routeTo: p.id };
+                if (isMirrorPlanet(q) && q.id !== selected.id) return { ...q, routeTo: null };
+                return q;
+            }));
+        } else {
+            setPlanets(ps => ps.map(q => q.id === selected.id ? { ...q, routeTo: p.id } : q));
+        }
+        setSelected(null);
     }
 
     useEffect(() => {

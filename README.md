@@ -1,7 +1,9 @@
-# Pax Flow — README
+# Pax Galaxia — README
 
-*A modern, fast remake of a classic “send-ships-along-lanes” space strategy game.*  
+*A faithful web remake of Dio Games' **Pax Galaxia** (Diodor Bitan).*
 You build up planets, set routes, and the economy/AI/combat all tick in real time. The UI shows smooth owner borders (Voronoi), hyperlanes, and clear flow arrows. This doc explains **every system** so designers, engineers, and playtesters understand the rules.
+
+Mechanics follow the [Pax Galaxia tech manual](https://sites.google.com/site/paxprojects/tech-manual) and the [Sillysoft manual](https://sillysoft.net/pax/manual/). Deliberate deviations from the original are flagged with **[REMAKE]**.
 
 ---
 
@@ -129,14 +131,19 @@ Each planet keeps:
 ---
 
 ## Movement & Routing
-- A planet with a valid `routeTo` sends a **fraction** of its ships once per second (econ tick):
-  ```js
-  const GAR = 10;                       // garrison floor
-  const moveFactor = (STAR[type].move || 1); // 2x for Blue
-  desiredSend = ships * 0.10 * moveFactor;   // baseline 10%
-  available   = Math.max(0, ships - GAR);
-  send        = Math.min(desiredSend, available); // never drop below GAR
-  ```
+A planet with a valid `routeTo` sends ships once per econ tick (1 Hz) using the **original integer rule** from the Pax Galaxia manual:
+
+> "If the source star has between 1 and 9 ships, only one will move — between 10 and 19, two will move — and so on."
+
+```js
+// game/hooks/useEconomyCombat.js — shipsToSend()
+if (ships < 1) return 0;
+const moveFactor = STAR[type].move || 1;       // 2x for Blue
+const base = Math.floor(ships / 10) + 1;       // 1, 1, ... , 1, 2, 2, ...
+return Math.min(ships, base * moveFactor);
+```
+
+- **No automatic garrison floor.** A planet can drain to 0; production refills it. Players (and AI) decide when to leave defenders by toggling routes.
 - A **packet** is created and travels along the lane with progress (updated each RAF frame):
   ```js
   edgeSpeed = 0.55 / Math.max(0.2, (distance / 420)) // faster on shorter lanes
@@ -162,20 +169,27 @@ Each second, for planets **under attack** (any `invaders` present):
 - Track **pressure time**: `underAttackTicks` (0–20).
 - Compute totals:
   ```js
-  defEff = ships * defenseMult * BASE_DEF_BIAS
   defenseMult = STAR[type].defense || 1   // Red doubles
-  BASE_DEF_BIAS = 1.2
+  // Green cancels Red: if any attacker came from a Green star, Red's bonus is voided.
+  if (hasGreenAttacker) defenseMult = 1;
+
+  defEff = ships * defenseMult * BASE_DEF_BIAS
+  BASE_DEF_BIAS = 1.5
 
   atkEff = sum(invadersEff[k] for each attacker k)
   ```
-- Exchange losses:
+- Exchange losses (symmetric K):
   ```js
-  K_ATK = 0.22
-  K_DEF = 0.30
+  K_ATK = 0.25
+  K_DEF = 0.25
 
   defLoss      = Math.min(ships,       K_ATK * atkEff)
   atkLossTotal = Math.min(sum(invaders), K_DEF * defEff)
   ```
+- **Why these numbers?** They reproduce the manual's required attack ratios:
+  - ordinary star → defEff = ships × 1.5, so **1.5:1 = grinding parity**, **2:1 = comfortable**;
+  - Red star → defEff = ships × 3.0, so **~4:1 needed**.
+  - Green vs Red collapses defEff back to × 1.5.
 - **Destroyed vs Damaged** split increases the longer a siege lasts:
   ```js
   destroyFrac = clamp(0.30 + 0.04 * underAttackTicks, 0, 0.80)
@@ -187,11 +201,14 @@ Each second, for planets **under attack** (any `invaders` present):
 **Capture Resolution**
 - If defenders reach `ships <= 0` and any invaders remain:
   - New `owner` becomes the attacker with the **largest remaining** invader pool.
-  - Defender’s **damaged stock** aftermath:
+  - Defender's **damaged stock** aftermath (per manual):
     - If the old owner has any **friendly neighbors**:
       - `25%` of that damaged stock is **destroyed** outright.
-      - `75%` **retreats** to friendly neighbors (even split) as retreat packets.
-    - Otherwise (isolated), **50%** converts to **ships for the new owner** (scavenged).
+      - `75%` **retreats**, split evenly across friendly neighbors as retreat packets. On arrival, **half** of each retreat packet repairs back to active ships; the other half stays as damaged stock at the destination.
+    - Otherwise (isolated), the attacker takes control of the **full** damaged stock (added to the new owner's `damaged[winner]`, repaired normally over time).
+  - **Surviving invaders** (the manual: "half of the attacking force immediately moves in; the other half remains in the system from where they launched the attack"):
+    - Winner's surviving invaders: half stay as ships on the captured planet, half retreat to the winner's neighboring planets. **[REMAKE]** We split across all friendly neighbors rather than tracking each invader's origin world.
+    - Losing attackers' survivors retreat to their own friendly neighbors if any exist; otherwise they remain as hostile invaders for a future siege.
   - Clears invader pools and resets siege timer.
 
 **Repairs**
@@ -213,13 +230,13 @@ Each second, for planets **under attack** (any `invaders` present):
 
 ## Mirror Planets (M)
 Mirrors are special:
-- They are **one shared planet** rendered in multiple places for map variety.
+- They are **one shared planet** rendered in multiple places for map variety. The manual allows **2–6 instances** per map.
 - **All copies** show the **same owner, ships, damaged, invaders**, etc.
 - Packets **arriving to any mirror copy** are redirected to the **canon** instance (the copy with the smallest id) so the pool stays consistent.
 
-**Single-lane lock (anti-teleport exploit)**
-- Exactly **one mirror copy** at a time is allowed to send along a lane:
-  - The system prefers the **canon** copy’s route if set; otherwise the first valid routed copy.
+**[REMAKE] Single-lane lock (anti-teleport exploit)**
+- This rule is **not in the original game** — we added it because real-time HTTP-thin clients can spam routes faster than a 2003-era Java game expected. Exactly **one mirror copy** at a time is allowed to send along a lane:
+  - The system prefers the **canon** copy's route if set; otherwise the first valid routed copy.
   - While any mirror packets are **in-flight**, that active copy/route is **locked**.
   - After packets arrive, another routed copy can take over (canon preferred).
 
@@ -299,16 +316,15 @@ Mirrors count **once** (the canon instance) so shared pools don’t double count
 
 ## Tuning Knobs (Where to Edit)
 Search these constants/lines in the component:
-- **Sending fraction**: `p.ships * 0.10 * moveFactor`
-- **Min garrison**: `GAR = 10`
-- **Defense bias**: `BASE_DEF_BIAS = 1.2`
-- **Combat constants**: `K_ATK = 0.22`, `K_DEF = 0.30`
-- **Siege softness**: `destroyFrac = 0.30 + 0.04 * underAttackTicks` (cap 0.80)
-- **Repair base**: `0.05` per second; multipliers based on Violet / under-attack
-- **Lane speed**: `edgeSpeed = 0.55 / max(0.2, dist/420)`
-- **AI cadence**: `PLAN_INTERVAL = 2200`
-- **AI stickiness**: `SWITCH_COOLDOWN = 2` (planning ticks)
-- **Mirror behavior**: see `chooseMirrorRouteAndAnchor`, `getMirrorGroup`
+- **Send rule** (integer): `shipsToSend()` in `game/hooks/useEconomyCombat.js` — `floor(ships/10) + 1`, × `moveFactor`. No garrison floor.
+- **Defense bias**: `BASE_DEF_BIAS = 1.5` in `useEconomyCombat.js` (tuned so 1.5:1 = parity, 2:1 wins, 4:1 cracks Red).
+- **Combat constants**: `K_ATK = 0.25`, `K_DEF = 0.25` (symmetric).
+- **Siege softness**: `destroyFrac = 0.30 + 0.04 * underAttackTicks` (cap 0.80).
+- **Repair base**: `0.05` per second; multipliers based on Violet / under-attack.
+- **Lane speed**: `edgeSpeed = 0.55 / max(0.2, dist/420)`.
+- **AI cadence**: `PLAN_INTERVAL = 2200`.
+- **AI advisory garrison**: `minGarrison()` in `useAIPlanner.js` — `8` if border, else `0`. Sim itself has no garrison.
+- **Mirror behavior**: see `chooseMirrorRouteAndAnchor`, `getMirrorGroup` in `game/utils/mirror.js`.
 
 ---
 
@@ -360,10 +376,10 @@ By design. Mirrors enforce a **single active lane** across all copies. While mir
 **Defenses feel really sticky.**  
 Defenders get a bias (`1.2×`) and **Red** doubles defense. Long sieges **destroy** a higher fraction per tick (fewer “damaged” to repair later). Push with **Green** launches (2× attack) or flank to cut reinforcements.
 
-**Can I tweak how much a planet sends?**  
-Yes—edit the `0.10` send fraction (and/or `GAR`), or add a UI slider to expose it.
+**Can I tweak how much a planet sends?**
+Yes — edit `shipsToSend()` in `useEconomyCombat.js`. The default mirrors the original integer rule; a continuous `ships * fraction` variant is a one-line change if you want it.
 
 ---
 
-*Pax Flow — designed for clarity, speed, and satisfying large-scale battles. Have fun conquering the map!*
+*Pax Galaxia (web) — a faithful remake of Diodor Bitan's Pax Galaxia. Have fun conquering the map!*
 
