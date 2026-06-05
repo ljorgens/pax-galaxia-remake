@@ -8,7 +8,9 @@ function fmt(n) {
     return String(n | 0);
 }
 
-export default function Scoreboard({ planets, packets, players, STAR }) {
+// Horizontal per-player status strip (original Pax Galaxia style):
+// each empire shown in its color as "Ply active/disabled" (human) or "AI active/disabled".
+export default function Scoreboard({ planets, packets, players }) {
     const scoreboard = useMemo(() => {
         const { canonIdx } = getMirrorGroup(planets);
         const mirrorCanonId = canonIdx != null ? planets[canonIdx].id : null;
@@ -16,56 +18,43 @@ export default function Scoreboard({ planets, packets, players, STAR }) {
         return players
             .map((pl) => {
                 let ships = 0,
-                    prodRate = 0,
+                    disabled = 0,
                     inflight = 0;
                 for (const p of planets)
                     if (p.owner === pl.id) {
                         if (isMirrorPlanet(p) && p.id !== mirrorCanonId) continue; // shared pool, count once
                         ships += p.ships;
-                        prodRate += p.prod * ((STAR[p.starType]?.prod) || 1);
+                        disabled += (p.damaged && p.damaged[pl.id]) || 0;
                     }
                 for (const f of packets) if (f.owner === pl.id) inflight += f.amount;
-                const effectiveProd = prodRate;
                 return {
                     id: pl.id,
                     name: pl.name,
                     kind: pl.kind,
                     color: pl.color,
-                    armies: Math.floor(ships + inflight),
-                    prod: Math.floor(effectiveProd),
+                    active: Math.floor(ships + inflight),
+                    disabled: Math.floor(disabled),
                 };
             })
-            .sort((a, b) => b.armies - a.armies);
-    }, [players, planets, packets, STAR]);
+            .sort((a, b) => b.active - a.active);
+    }, [players, planets, packets]);
 
     return (
-        <div className="w-full max-w-[980px]">
-            <div className="mt-2 rounded-xl border border-slate-700/60 bg-slate-900/40">
-                <div className="grid grid-cols-4 px-3 py-2 text-xs opacity-70">
-                    <div>Name</div>
-                    <div>Type</div>
-                    <div>Armies</div>
-                    <div>Production</div>
+        <div className="w-full max-w-[980px] mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 px-3 py-2 rounded-xl border border-slate-700/60 bg-slate-900/40 text-sm">
+            {scoreboard.map((row) => (
+                <div key={row.id} className="flex items-center gap-1.5">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: row.color }} />
+                    <span className="font-semibold" style={{ color: row.color }}>
+                        {row.kind === "human" ? "Ply" : "AI"}
+                    </span>
+                    <span className="opacity-80">
+                        {row.name}
+                        {row.kind === "human" ? " (You)" : ""}
+                    </span>
+                    <span className="tabular-nums font-semibold">{fmt(row.active)}</span>
+                    <span className="tabular-nums text-xs opacity-50">/{fmt(row.disabled)}</span>
                 </div>
-
-                {scoreboard.map((row) => (
-                    <div
-                        key={row.id}
-                        className="grid grid-cols-4 px-3 py-1 items-center text-sm border-t border-slate-700/40"
-                    >
-                        <div className="flex items-center gap-2">
-              <span
-                  className="inline-block w-3 h-3 rounded-full"
-                  style={{ background: row.color }}
-              />
-                            <span>{row.kind === "human" ? `${row.name} (You)` : row.name}</span>
-                        </div>
-                        <div>{row.kind === "human" ? "Human" : "Computer"}</div>
-                        <div className="font-semibold">{fmt(row.armies)}</div>
-                        <div>{fmt(row.prod)}</div>
-                    </div>
-                ))}
-            </div>
+            ))}
         </div>
     );
 }

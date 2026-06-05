@@ -26,6 +26,33 @@ const NAME_POOL = [
     "Seer Isra",
 ];
 
+const STAR_PREFIX = [
+    "Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta",
+    "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi", "Omicron", "Sigma",
+    "Tau", "Upsilon", "Phi", "Chi", "Psi", "Omega",
+];
+const STAR_ROOT = [
+    "Vega", "Lyra", "Orion", "Draco", "Cygni", "Centauri", "Hydrae", "Corvi",
+    "Aquilae", "Pavonis", "Carinae", "Velorum", "Crucis", "Arae", "Lupi", "Normae",
+    "Tucanae", "Pyxidis", "Fornacis", "Eridani", "Ceti", "Leonis", "Scorpii", "Tauri",
+    "Aurigae", "Persei", "Cassiopeiae", "Andromedae", "Phoenicis", "Gruis",
+];
+
+function makeStarNamePicker(rng) {
+    const used = new Set();
+    return () => {
+        for (let attempt = 0; attempt < 40; attempt++) {
+            const p = STAR_PREFIX[Math.floor((rng() || 0) * STAR_PREFIX.length)];
+            const r = STAR_ROOT[Math.floor((rng() || 0) * STAR_ROOT.length)];
+            const n = `${p} ${r}`;
+            if (!used.has(n)) { used.add(n); return n; }
+        }
+        const n = `Star ${used.size + 1}`;
+        used.add(n);
+        return n;
+    };
+}
+
 function makeNamePicker(rng) {
     const available = [...NAME_POOL];
     let counter = 0;
@@ -75,12 +102,13 @@ export function ensureAtLeastTwoMirrors(planets){
 
 export function generateMap(players, totalStars, rng){
     const planets=[]; const MIN_DIST=Math.max(60, RADIUS*3.2);
+    const pickStarName = makeStarNamePicker(rng);
     // seed with homeworlds
     for (let i=0;i<players.length;i++){
         let px,py,attempts=0;
         do { px=randRange(rng,90,WIDTH-90); py=randRange(rng,80,HEIGHT-80); attempts++; }
         while (attempts<8000 && planets.some(p=>Math.hypot(p.x-px,p.y-py)<MIN_DIST));
-        planets.push({ id: planets.length+1, x:px, y:py, owner: players[i].id, ships:36, prod:1.1, routeTo:null, neighbors:[], starType:'O', damaged:{}, invaders:{}, invadersEff:{}, underAttackTicks:0 });
+        planets.push({ id: planets.length+1, name: pickStarName(), x:px, y:py, owner: players[i].id, ships:36, prod:1.1, routeTo:null, neighbors:[], starType:'O', damaged:{}, invaders:{}, invadersEff:{}, underAttackTicks:0 });
     }
     // fill neutrals
     let tries=0, guard=0; while(planets.length<totalStars && tries<12000){
@@ -88,7 +116,7 @@ export function generateMap(players, totalStars, rng){
         let ok = planets.every(p=>Math.hypot(p.x-x,p.y-y)>=MIN_DIST);
         if (!ok && guard%4000===0){ const relax=MIN_DIST*0.9; ok = planets.every(p=>Math.hypot(p.x-x,p.y-y)>=relax); }
         if (!ok) continue;
-        planets.push({ id: planets.length+1, x, y, owner:'neutral', ships: Math.floor(randRange(rng,8,24)), prod:1.0, routeTo:null, neighbors:[], starType:'O', damaged:{}, invaders:{}, invadersEff:{}, underAttackTicks:0 });
+        planets.push({ id: planets.length+1, name: pickStarName(), x, y, owner:'neutral', ships: Math.floor(randRange(rng,8,24)), prod:1.0, routeTo:null, neighbors:[], starType:'O', damaged:{}, invaders:{}, invadersEff:{}, underAttackTicks:0 });
     }
     let neighborIds = generateGraphFlexible(planets, rng);
     neighborIds = ensureGlobalConnectivity(planets, neighborIds);

@@ -19,6 +19,7 @@ import usePauseHotkey from "./game/hooks/usePauseHotkey"
 
 import GameCanvas from "./game/components/GameCanvas";
 import Controls from "./game/components/Controls";
+import InfoPanel from "./game/components/InfoPanel";
 import Legend from "./game/components/Legend";
 import Scoreboard from "./game/components/Scoreboard";
 
@@ -117,7 +118,7 @@ export default function PaxGame(){
     usePackets({ scene, paused, worldSpeed, setPackets });
 
     // economy/combat main loop
-    useEconomyCombat({ scene, paused, worldSpeed, STAR, packets, packetsRef, setPackets, setPlanets });
+    useEconomyCombat({ scene, paused, worldSpeed, STAR, planets, packets, packetsRef, setPackets, setPlanets });
 
     // AI planner
     useAIPlanner({ scene, paused, players, worldSpeed, STAR, startTime, pausedMsRef, setPlanets, aiStickMapRef, aiTickRef });
@@ -230,6 +231,38 @@ export default function PaxGame(){
 
     const rematchSameSeed = () => bootGame({ ai: aiCount, stars: totalStars, preset, seed });
 
+    // "Give up": human concedes; the current leader (most planets, then armies) wins.
+    function concede(){
+        if (scene !== 'playing') return;
+        const me = players[0];
+        const counts = new Map();
+        for (const planet of planets) {
+            if (!planet.owner || planet.owner === 'neutral' || planet.owner === me.id) continue;
+            const c = counts.get(planet.owner) || { planets: 0, ships: 0 };
+            c.planets += 1; c.ships += planet.ships;
+            counts.set(planet.owner, c);
+        }
+        let leader = null, best = null;
+        for (const [owner, c] of counts) {
+            if (!best || c.planets > best.planets || (c.planets === best.planets && c.ships > best.ships)) {
+                best = c; leader = owner;
+            }
+        }
+        if (!leader) { backToMenu(); return; }
+        setWinnerId(leader);
+        setFinalElapsed(elapsed);
+        setFinalPlayerStats(() => {
+            const snapshot = {};
+            for (const player of players) {
+                if (!player || !player.id) continue;
+                snapshot[player.id] = { ...(metricsRef.current[player.id] || { maxArmies: 0, maxPlanets: 0, maxProd: 0 }) };
+            }
+            return snapshot;
+        });
+        setPaused(true);
+        setScene('victory');
+    }
+
     function backToMenu(){
         setWinnerId(null);
         setFinalElapsed(0);
@@ -242,6 +275,38 @@ export default function PaxGame(){
         metricsRef.current = {};
         setScene('menu');
     }
+
+    // Drag-to-route: commit a chain of [fromId, toId] pairs as supply lines.
+    // Mirrors original Pax Galaxia's "drag across a path of stars you control".
+    function commitRoute(pairs){
+        if (!pairs || !pairs.length) return;
+        const me = players[0];
+        setPlanets(ps => {
+            const lookup = Object.fromEntries(ps.map(q => [q.id, q]));
+            const routeMap = new Map();
+            for (const [fromId, toId] of pairs){
+                const from = lookup[fromId];
+                if (from && from.owner === me.id && from.neighbors.includes(toId)) routeMap.set(fromId, toId);
+            }
+            if (!routeMap.size) return ps;
+            const anyMirrorSource = [...routeMap.keys()].some(id => isMirrorPlanet(lookup[id]));
+            return ps.map(q => {
+                if (routeMap.has(q.id)) return { ...q, routeTo: routeMap.get(q.id) };
+                // setting a route on any mirror makes that the active lane; clear the others
+                if (anyMirrorSource && isMirrorPlanet(q)) return { ...q, routeTo: null };
+                return q;
+            });
+        });
+        setSelected(null);
+    }
+
+    // Right-click selects one of your stars (or clears); background click/right-click clears.
+    function selectStar(p){
+        if (scene !== 'playing') return;
+        const me = players[0];
+        setSelected(p && p.owner === me.id ? p : null);
+    }
+    function clearSelection(){ setSelected(null); }
 
     function handlePlanetClick(p){
         if (scene !== 'playing') return;
@@ -317,29 +382,51 @@ export default function PaxGame(){
 
     return (
         <div className="relative w-full flex flex-col items-center gap-3 select-none">
-            <Controls {...{ paused, setPaused, worldSpeed, setWorldSpeed, musicOn, setMusicOn, musicVolume, setMusicVolume, backToMenu, newMapSameSettings }} />
-            <Legend STAR={STAR} TYPE_COLORS={TYPE_COLORS} />
-            <GameCanvas
-                {...{
-                    planets,
-                    packets,
-                    players,
-                    selected,
-                    onPlanetClick: handlePlanetClick,
-                    STAR,
-                    TYPE_COLORS,
-                    WIDTH,
-                    HEIGHT,
-                    RADIUS,
-                    vor,
-                    edgeSegs,
-                    byId,
-                    displayShips,
-                    elapsed,
-                    battleStats,
-                }}
-            />
-            <Scoreboard planets={planets} packets={packets} players={players} STAR={STAR} />
+            <div className="flex items-start gap-3">
+                <div className="flex flex-col gap-2">
+                    <Controls {...{ paused, setPaused, worldSpeed, setWorldSpeed, musicOn, setMusicOn, musicVolume, setMusicVolume, backToMenu, newMapSameSettings, onGiveUp: concede }} />
+                    {(() => {
+                        const live = selected ? byId[selected.id] : null;
+                        return (
+                            <InfoPanel
+                                planet={live}
+                                ownerName={live ? (players.find((pl) => pl.id === live.owner)?.name || "—") : ""}
+                                ownerColor={live ? (players.find((pl) => pl.id === live.owner)?.color || "#fff") : "#fff"}
+                                STAR={STAR}
+                                active={live ? Math.floor(displayShips(live, byId, planets)) : 0}
+                                disabled={live ? Math.floor((live.damaged && live.damaged[live.owner]) || 0) : 0}
+                            />
+                        );
+                    })()}
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                    <Legend STAR={STAR} TYPE_COLORS={TYPE_COLORS} />
+                    <GameCanvas
+                        {...{
+                            planets,
+                            packets,
+                            players,
+                            selected,
+                            onPlanetClick: handlePlanetClick,
+                            onCommitRoute: commitRoute,
+                            onSelectStar: selectStar,
+                            onClearSelection: clearSelection,
+                            STAR,
+                            TYPE_COLORS,
+                            WIDTH,
+                            HEIGHT,
+                            RADIUS,
+                            vor,
+                            edgeSegs,
+                            byId,
+                            displayShips,
+                            elapsed,
+                            battleStats,
+                        }}
+                    />
+                    <Scoreboard planets={planets} packets={packets} players={players} STAR={STAR} />
+                </div>
+            </div>
 
             {isCountdown && (
                 <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm text-center">

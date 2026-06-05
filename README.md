@@ -131,17 +131,18 @@ Each planet keeps:
 ---
 
 ## Movement & Routing
-A planet with a valid `routeTo` sends ships once per econ tick (1 Hz) using the **original integer rule** from the Pax Galaxia manual:
-
-> "If the source star has between 1 and 9 ships, only one will move — between 10 and 19, two will move — and so on."
+A planet with a valid `routeTo` sends ships once per econ tick (1 Hz). The manual's rule was per-tick at a sub-second tick rate (~200ms), which works out to roughly **25–50% of a planet's force per real second** in the original. We preserve that feel at our 1 Hz tick:
 
 ```js
 // game/hooks/useEconomyCombat.js — shipsToSend()
 if (ships < 1) return 0;
-const moveFactor = STAR[type].move || 1;       // 2x for Blue
-const base = Math.floor(ships / 10) + 1;       // 1, 1, ... , 1, 2, 2, ...
+const moveFactor = STAR[type].move || 1;                       // 2x for Blue
+const fractional = Math.floor(ships * 0.25);                    // SEND_FRACTION_PER_SECOND
+const base = Math.max(1, fractional);                           // "at least 1 ship tries to move"
 return Math.min(ships, base * moveFactor);
 ```
+
+The `Math.max(1, ...)` preserves the original's "1 ship always moves if there's anything to send" property; the fractional component reproduces the per-second flow rate.
 
 - **No automatic garrison floor.** A planet can drain to 0; production refills it. Players (and AI) decide when to leave defenders by toggling routes.
 - A **packet** is created and travels along the lane with progress (updated each RAF frame):
@@ -178,18 +179,15 @@ Each second, for planets **under attack** (any `invaders` present):
 
   atkEff = sum(invadersEff[k] for each attacker k)
   ```
-- Exchange losses (symmetric K):
+- Exchange losses (asymmetric — defenders absorb more slowly than they hit):
   ```js
-  K_ATK = 0.25
-  K_DEF = 0.25
+  K_ATK = 0.25   // defender loses K_ATK * atkEff per tick
+  K_DEF = 0.10   // each attacker loses K_DEF * defEff per tick
 
   defLoss      = Math.min(ships,       K_ATK * atkEff)
   atkLossTotal = Math.min(sum(invaders), K_DEF * defEff)
   ```
-- **Why these numbers?** They reproduce the manual's required attack ratios:
-  - ordinary star → defEff = ships × 1.5, so **1.5:1 = grinding parity**, **2:1 = comfortable**;
-  - Red star → defEff = ships × 3.0, so **~4:1 needed**.
-  - Green vs Red collapses defEff back to × 1.5.
+- **Why asymmetric?** The manual's required ratios (1.5:1 minimum, 2:1 ideal, 4:1 vs Red) imply attackers can win at modest superiority over time. Symmetric K-values produce stalemates because defender's defEff includes the 1.5× bias, so defenders always out-fight attackers. Dropping K_DEF lets the invader pool build up faster than the defender can purge it; combined with the siege-time `destroyFrac` ramp (which makes prolonged sieges progressively more lethal), sustained pressure eventually breaks the defender.
 - **Destroyed vs Damaged** split increases the longer a siege lasts:
   ```js
   destroyFrac = clamp(0.30 + 0.04 * underAttackTicks, 0, 0.80)
@@ -316,7 +314,7 @@ Mirrors count **once** (the canon instance) so shared pools don’t double count
 
 ## Tuning Knobs (Where to Edit)
 Search these constants/lines in the component:
-- **Send rule** (integer): `shipsToSend()` in `game/hooks/useEconomyCombat.js` — `floor(ships/10) + 1`, × `moveFactor`. No garrison floor.
+- **Send rule**: `shipsToSend()` in `game/hooks/useEconomyCombat.js` — `floor(ships * SEND_FRACTION_PER_SECOND)` with a minimum of 1, × `moveFactor`. No garrison floor.
 - **Defense bias**: `BASE_DEF_BIAS = 1.5` in `useEconomyCombat.js` (tuned so 1.5:1 = parity, 2:1 wins, 4:1 cracks Red).
 - **Combat constants**: `K_ATK = 0.25`, `K_DEF = 0.25` (symmetric).
 - **Siege softness**: `destroyFrac = 0.30 + 0.04 * underAttackTicks` (cap 0.80).

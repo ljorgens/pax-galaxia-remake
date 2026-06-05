@@ -163,15 +163,21 @@ export function useAIPlanner({
                         const friends = friendlyNeighborsOf(p, ai.id, byId);
                         const enemies = enemyNeighborsOf(p, ai.id, byId); // includes neutrals
 
-                        // If currently attacking, keep only if ≥1.5× vs that target
+                        // If currently attacking, only abandon if we're clearly losing the
+                        // exchange (ratio < 1.0). Committed attacks need to ride out the
+                        // initial source-drain — once invaders are in-flight or pooled on
+                        // the target, abandoning would waste those ships. The original
+                        // game has no auto-abandon; this is just a safety net for hopeless
+                        // pushes against a much-stronger target.
                         if (p.routeTo && isEnemyOwner(byId[p.routeTo]?.owner, ai.id)) {
                             const t = byId[p.routeTo];
                             if (t) {
-                                const g = minGarrison(p, byId);
-                                const mySendable = Math.max(0, (p.ships || 0) - g);
-                                const ratioNow = mySendable / Math.max(1, t.ships || 0);
-                                if (ratioNow < 1.5) arr[i] = { ...p, routeTo: null };
-                                else               arr[i] = { ...p };
+                                const ratioNow = (p.ships || 0) / Math.max(1, t.ships || 0);
+                                if (ratioNow < 1.0 && (p.ships || 0) < 5) {
+                                    arr[i] = { ...p, routeTo: null };
+                                } else {
+                                    arr[i] = { ...p };
+                                }
                                 continue;
                             }
                         }
@@ -193,18 +199,28 @@ export function useAIPlanner({
                             continue;
                         }
 
-                        // Border planet: stockpile until 2× TOTAL hostiles that can fight back (EXCLUDES neutrals)
+                        // Border planet: pick the weakest adjacent non-friendly we can
+                        // reasonably win against (1.5:1 minimum per the manual). The old
+                        // rule required stockpiling 2× total hostile-neighbor ships first,
+                        // which left AIs sitting on huge piles while never expanding into
+                        // easy neutrals. Now we just attack what's winnable, unless a
+                        // stronger TRUE enemy (not a neutral) is breathing down our neck
+                        // and would punish us for draining.
                         if (enemies.length > 0) {
-                            const totalHostile = totalHostileAdjShips(p, ai.id, byId); // no neutrals here
-                            const g = minGarrison(p, byId);
-                            const mySendable = Math.max(0, (p.ships || 0) - g);
+                            const strongestTrueEnemy = (p.neighbors || [])
+                                .map((id) => byId[id])
+                                .filter((n) => n && n.owner !== p.owner && !isNeutral(n.owner))
+                                .reduce((max, n) => Math.max(max, n.ships || 0), 0);
 
-                            if (mySendable >= 2 * Math.max(1, totalHostile)) {
-                                // choose weakest adjacent non-friendly (neutral included as valid target)
-                                const target = [...enemies].sort(preferLowShipsThenId)[0];
-                                const ratioNow = mySendable / Math.max(1, target.ships || 0);
-                                if (ratioNow >= 1.5) arr[i] = { ...p, routeTo: target.id };
-                                else                 arr[i] = { ...p, routeTo: null };
+                            const target = [...enemies].sort(preferLowShipsThenId)[0];
+                            const ratioNow = (p.ships || 0) / Math.max(1, target.ships || 0);
+
+                            const safeFromCounter =
+                                strongestTrueEnemy === 0 ||
+                                (p.ships || 0) >= strongestTrueEnemy * 0.8;
+
+                            if (ratioNow >= 1.5 && safeFromCounter) {
+                                arr[i] = { ...p, routeTo: target.id };
                             } else {
                                 arr[i] = { ...p, routeTo: null };
                             }

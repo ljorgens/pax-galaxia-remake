@@ -5,14 +5,22 @@ import { buildPacket, buildRetreat } from "./usePackets.js";
 
 // ---------------------------------------------------------------------------
 // Tunable constants — all hoisted so unit tests can read/reason about them.
-// Combat constants reproduce the manual's required ratios:
-//   ordinary star: defEff = ships * 1.5  → 1.5:1 = grinding parity, 2:1 wins
-//   Red star:     defEff = ships * 3.0   → ~4:1 cracks it
+//
+// Combat is asymmetric: defenders absorb attacker pressure more slowly than
+// they themselves take damage. This reproduces the manual's required ratios
+// at single-source attacks:
+//   ordinary star: 1.5:1 grinds (manual: "needed"), 2:1 wins comfortably
+//   Red star (×2): 4:1 cracks it (manual: "4:1 preferable for defense stars")
 //   Green vs Red: defenseMult collapses back to 1 → Red bonus is voided
+//
+// Tuning intuition: `K_ATK * atkEff` defender loss/sec, `K_DEF * defEff`
+// attacker loss/sec. K_DEF much smaller than K_ATK lets the invader pool
+// build up over a few seconds; combined with the siege-time `destroyFrac`
+// ramp, sustained pressure eventually breaks the defender.
 // ---------------------------------------------------------------------------
 export const BASE_DEF_BIAS = 1.5;
 export const K_ATK = 0.25;
-export const K_DEF = 0.25;
+export const K_DEF = 0.10;
 export const SIEGE_TICK_CAP = 20;
 export const DESTROY_FRAC_MIN = 0.30;
 export const DESTROY_FRAC_RAMP = 0.04;   // per siege tick
@@ -24,15 +32,25 @@ export const RETREAT_DESTROY_FRAC = 0.25; // fraction destroyed when defenders r
 export const WINNER_STAY_FRAC = 0.5;      // half stays, half returns to friendlies
 
 // ---------------------------------------------------------------------------
-// Original Pax Galaxia send rule (manual, Dio Games):
-//   "1-9 ships -> 1 moves; 10-19 -> 2; 20-29 -> 3; and so on" per tick.
-// = floor(ships / 10) + 1, then scaled by moveFactor (Blue = 2x).
-// No automatic garrison floor: a planet can drain to 0 if production can't keep up.
+// Send rule, adapted from the manual to a 1Hz tick.
+//
+// The manual says "1-9 ships -> 1 moves; 10-19 -> 2; 20-29 -> 3; and so on"
+// PER TICK. The original ran sub-second ticks (~200ms), so that rule worked
+// out to roughly 25-50% of a planet's force per real second — which is what
+// made attacks actually crack defended worlds at 1.5:1+ ratios.
+//
+// At our 1Hz econ tick, the literal integer rule under-shoots ~5x and combat
+// stalemates (defender production out-paces attacker attrition). We preserve
+// the feel by sending SEND_FRACTION_PER_SECOND of the source per tick, with
+// floor + integer minimum so the "1 ship always tries to move" property of
+// the original is intact. Blue stars (moveFactor = 2) double it.
 // ---------------------------------------------------------------------------
+export const SEND_FRACTION_PER_SECOND = 0.25;
 export function shipsToSend(p, STAR) {
     if (p.ships < 1) return 0;
     const moveFactor = STAR[p.starType]?.move || 1;
-    const base = Math.floor(p.ships / 10) + 1;
+    const fractional = Math.floor(p.ships * SEND_FRACTION_PER_SECOND);
+    const base = Math.max(1, fractional);
     return Math.min(p.ships, base * moveFactor);
 }
 
@@ -317,23 +335,27 @@ export function clonePlanetsForTick(ps) {
 // Hook — orchestrates the helpers on a 1s interval and handles packet arrivals
 // on a separate effect keyed to the packets array.
 //
-// StrictMode notes:
-//  - The setPlanets updater is double-invoked in dev to surface impurities.
-//    We keep it pure by collecting outgoing packets into a local buffer
-//    (reassigned to a fresh array at the start of each invocation), and
-//    dispatching setPackets afterwards. Both invocations end with the
-//    "outgoing" variable pointing at the LAST run's array; React keeps the
-//    last updater result, so packets and planets stay in sync.
-//  - The arrival effect would otherwise double-apply arrivals on the
-//    initial mount/unmount/mount cycle, since its setPlanets updater is not
-//    idempotent. We guard with a ref that records the packets reference we
-//    last consumed; a re-fire with the same reference is a no-op.
+// Architectural note: we run the tick OUTSIDE the setPlanets updater. The
+// updater pattern would have made the side-effect (queueing packets) impure
+// AND, more importantly, async — by the time control returned from
+// setPlanets(updater), the updater had not yet run, so any "after-dispatch"
+// setPackets call would see an empty outgoing buffer and silently drop every
+// packet. The fix: read the latest planets via a ref, run the pure helpers
+// synchronously to build the next planets array + outgoing packets list,
+// then dispatch both setPlanets(value) and setPackets(updater) as a pair.
+//
+// Race with the arrival effect (which fires on packet RAF updates): both
+// pathways dispatch in FIFO order via React's update queue, so a tick that
+// observed stale `planetsRef` would still see its setPlanets(value) layered
+// before any pending arrival updater. In practice the planetsRef effect
+// commits between renders, so the staleness window is single-frame.
 // ---------------------------------------------------------------------------
 export function useEconomyCombat({
                                      scene,
                                      paused,
                                      worldSpeed,
                                      STAR,
+                                     planets,
                                      packets,
                                      packetsRef,
                                      setPackets,
@@ -342,41 +364,37 @@ export function useEconomyCombat({
     const mirrorRouteLockRef = useRef({ activeIdx: null, to: null, owner: null });
     const lastAppliedPacketsRef = useRef(null);
 
+    // Mirror of the latest planets state so the 1s tick can compute the next
+    // state synchronously instead of inside a setPlanets updater.
+    const planetsRef = useRef(planets);
+    useEffect(() => { planetsRef.current = planets; }, [planets]);
+
     useEffect(() => {
         if (scene !== "playing") return;
         const timer = setInterval(() => {
             if (paused) return;
+            const source = planetsRef.current;
+            if (!source) return;
 
-            // Buffer reassigned-to-empty at the start of every updater run so
-            // that the LAST invocation's array is the one we dispatch.
-            let outgoing = [];
+            const arr = clonePlanetsForTick(source);
+            const byId = Object.fromEntries(arr.map((p) => [p.id, p]));
+            const outgoing = [];
+            const queue = (fromId, toId, owner, amount, a, b, S) =>
+                outgoing.push(buildPacket(fromId, toId, owner, amount, a, b, S));
+            const queueR = (fromId, toId, owner, amount, a, b) =>
+                outgoing.push(buildRetreat(fromId, toId, owner, amount, a, b));
 
-            setPlanets((ps) => {
-                outgoing = [];
-                const arr = clonePlanetsForTick(ps);
-                const byId = Object.fromEntries(arr.map((p) => [p.id, p]));
+            tickProduction(arr, STAR, worldSpeed);
+            const { activeIdx, to } = chooseMirrorRouteAndAnchor(
+                arr, packetsRef, mirrorRouteLockRef
+            );
+            tickSending(arr, byId, STAR, activeIdx, to, queue);
+            tickCombat(arr, byId, STAR, queueR);
+            tickRepairs(arr, worldSpeed);
+            syncMirrors(arr, mirrorRouteLockRef);
 
-                tickProduction(arr, STAR, worldSpeed);
-
-                const { activeIdx, to } = chooseMirrorRouteAndAnchor(
-                    arr, packetsRef, mirrorRouteLockRef
-                );
-                const queue = (fromId, toId, owner, amount, a, b, S) =>
-                    outgoing.push(buildPacket(fromId, toId, owner, amount, a, b, S));
-                const queueR = (fromId, toId, owner, amount, a, b) =>
-                    outgoing.push(buildRetreat(fromId, toId, owner, amount, a, b));
-
-                tickSending(arr, byId, STAR, activeIdx, to, queue);
-                tickCombat(arr, byId, STAR, queueR);
-                tickRepairs(arr, worldSpeed);
-                syncMirrors(arr, mirrorRouteLockRef);
-
-                return arr;
-            });
-
-            if (outgoing.length) {
-                setPackets((pk) => [...pk, ...outgoing]);
-            }
+            setPlanets(arr);
+            if (outgoing.length) setPackets((pk) => [...pk, ...outgoing]);
         }, 1000);
         return () => clearInterval(timer);
     }, [scene, paused, worldSpeed, STAR, setPlanets, setPackets, packetsRef]);
@@ -398,4 +416,5 @@ export function useEconomyCombat({
             return arr;
         });
     }, [scene, packets, setPackets, setPlanets]);
+
 }

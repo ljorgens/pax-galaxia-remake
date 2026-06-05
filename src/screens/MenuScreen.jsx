@@ -60,7 +60,7 @@ export default function MenuScreen({ musicOn, musicVolume, onToggleMusic, onVolu
 
             <div className="relative z-10 w-full max-w-[980px] text-slate-100 rounded-2xl overflow-hidden border border-slate-700/60 bg-slate-900/60 backdrop-blur-sm p-6">
                 <div className="flex items-start justify-between gap-4">
-                    <h1 className="text-2xl font-semibold mb-4">Pax Flow — Galaxy Setup</h1>
+                    <h1 className="text-2xl font-semibold mb-4">Pax Galaxia — Galaxy Setup</h1>
                     <button
                         type="button"
                         onClick={() => setShowHelp(true)}
